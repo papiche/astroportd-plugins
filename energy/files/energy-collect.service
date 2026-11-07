@@ -1,0 +1,7 @@
+[Unit]
+Description=astroportd-plugins energy : collecteur energy/v1 (consommation et production)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 %h/.local/share/astroportd-plugins/energy/bin/energy-collect.py
+Nice=10

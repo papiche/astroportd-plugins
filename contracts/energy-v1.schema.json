@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/papiche/astroportd-plugins/contracts/energy-v1.schema.json",
+  "title": "energy/v1",
+  "description": "Fichier <station>/plugins/energy/energy.json : consommation (PowerJoular) et production (Victron) de la machine qui fait tourner astroportd. Écrit par le plugin energy, lu par astroportd (balise kind 30850, cockpit).",
+  "type": "object",
+  "required": ["schema", "generated_at", "consumption", "production"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "energy/v1" },
+    "generated_at": { "type": "integer", "minimum": 0, "description": "Écriture du fichier (secondes Unix). astroportd ignore un fichier de plus d'une heure." },
+    "consumption": {
+      "description": "Consommation électrique ; null si aucun capteur.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["source", "today_kwh", "month_kwh", "total_kwh", "avg_w_recent", "since", "days_recorded"],
+          "additionalProperties": false,
+          "properties": {
+            "source": { "type": "string", "examples": ["powerjoular"] },
+            "power_w": { "type": ["number", "null"], "minimum": 0, "description": "Puissance moyenne des 5 dernières minutes mesurées." },
+            "last_sample_at": { "type": ["integer", "null"], "minimum": 0 },
+            "today_kwh": { "type": "number", "minimum": 0 },
+            "month_kwh": { "type": "number", "minimum": 0 },
+            "total_kwh": { "type": "number", "minimum": 0 },
+            "avg_w_recent": { "type": "number", "minimum": 0, "description": "Puissance moyenne des 30 derniers jours enregistrés." },
+            "since": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+            "days_recorded": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "production": {
+      "description": "Production solaire ; null si aucun régulateur.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["source", "today_wh", "month_wh", "total_wh", "days_recorded"],
+          "additionalProperties": false,
+          "properties": {
+            "source": { "type": "string", "examples": ["victron"] },
+            "power_w": { "type": ["number", "null"], "minimum": 0, "description": "Somme des régulateurs lus dans la dernière heure." },
+            "battery_v": { "type": ["number", "null"] },
+            "charge_state": { "type": "string" },
+            "devices": { "type": "integer", "minimum": 0 },
+            "last_sample_at": { "type": ["integer", "null"], "minimum": 0 },
+            "today_wh": { "type": "number", "minimum": 0 },
+            "month_wh": { "type": "number", "minimum": 0 },
+            "total_wh": { "type": "number", "minimum": 0 },
+            "since": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+            "days_recorded": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    }
+  }
+}

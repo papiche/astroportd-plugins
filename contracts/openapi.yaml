@@ -1,0 +1,20 @@
+openapi: 3.1.0
+info:
+  title: astroportd-plugins — contrats de données
+  version: 1.0.0
+  license:
+    name: AGPL-3.0
+    identifier: AGPL-3.0-only
+  description: |
+    Formats des fichiers qu'un plugin système dépose pour la station astroportd, dans
+    `<station>/plugins/<plugin>/` (par défaut `~/.zen/astroportd/plugins/<plugin>/`).
+
+    Un plugin **n'appelle pas** la station et la station **n'exécute jamais** le code d'un plugin :
+    l'échange se fait par ces fichiers, écrits de façon atomique (fichier temporaire puis renommage),
+    au format versionné déclaré dans le `plugin.toml` du plugin (`produces = "energy/v1"`).
+    Un fichier invalide ou périmé est ignoré par la station, qui le dit au Capitaine.
+paths: {}
+components:
+  schemas:
+    EnergyV1:
+      $ref: './energy-v1.schema.json'

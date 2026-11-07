@@ -1,0 +1,44 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: "Dépendances de test"
+        run: pip install jsonschema pyyaml
+      - name: "Scripts shell (shellcheck)"
+        run: shellcheck */*.sh
+      - name: "Contrats : schémas JSON valides et OpenAPI lisible"
+        run: |
+          python - <<'PY'
+          import glob, json, yaml, jsonschema
+          for f in glob.glob("contracts/*.schema.json"):
+              jsonschema.Draft202012Validator.check_schema(json.load(open(f)))
+              print("schéma valide :", f)
+          doc = yaml.safe_load(open("contracts/openapi.yaml"))
+          assert doc["openapi"].startswith("3.1"), "OpenAPI 3.1 attendu"
+          for name, s in doc["components"]["schemas"].items():
+              ref = s.get("$ref", "")
+              assert ref.startswith("./") and open("contracts/" + ref[2:]), f"{name} : $ref introuvable"
+          print("openapi.yaml : références résolues")
+          PY
+      - name: "Manifestes des plugins"
+        run: |
+          python - <<'PY'
+          import glob, tomllib
+          for f in glob.glob("*/plugin.toml"):
+              m = tomllib.load(open(f, "rb"))
+              for k in ("name", "version", "description", "produces", "data_dir", "data_file", "needs_root"):
+                  assert k in m, f"{f} : clé {k} manquante"
+              print(f, "→", m["name"], m["version"], m["produces"])
+          PY
+      - name: "Tests"
+        run: python -m unittest discover -s tests -v

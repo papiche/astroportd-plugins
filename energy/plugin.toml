@@ -1,0 +1,16 @@
+# Manifeste d'un plugin système d'astroportd (lu par la station : écran « Plugins »).
+name = "energy"
+version = "0.1.0"
+description = "Consommation électrique de la station (PowerJoular) et production solaire (régulateurs Victron en Bluetooth)"
+# Contrat de données écrit pour la station (contracts/energy-v1.schema.json) et son dossier, relatif à la station.
+produces = "energy/v1"
+data_dir = "plugins/energy"
+data_file = "energy.json"
+# Rafraîchissement attendu : au-delà de `stale_after_secs`, la station tient les données pour périmées.
+refresh_secs = 300
+stale_after_secs = 3600
+# Les capteurs demandent l'administrateur une fois, à l'installation (sudo) ; le collecteur tourne sans.
+needs_root = true
+root_reason = "PowerJoular lit les compteurs d'énergie du processeur (RAPL) ; les deux capteurs sont des services système"
+platforms = ["linux-x86_64", "linux-aarch64", "linux-armv7"]
+# Origine : Astroport.ONE install/install_powerjoular.sh, install/install_victron.sh, tools/victron/, tools/systemd/powerjoular.service
