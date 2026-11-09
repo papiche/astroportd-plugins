@@ -1,0 +1,15 @@
+# Manifeste d'un plugin système d'astroportd (lu par la station : écran « Plugins »).
+name = "media"
+version = "0.1.0"
+description = "Acquisition et préparation des films, séries, vidéos et musiques (ffprobe, ffmpeg, yt-dlp, catalogue TMDB), déposés dans l'uCloud du membre avec leur fiche"
+# Contrat de données écrit dans l'uCloud du membre (contracts/media-v1.schema.json) : une fiche `<nom>.media.json` par fichier.
+# Ce plugin n'écrit rien pour la station : il écrit par WebDAV avec le jeton du membre et publie sur le relai (voir README).
+produces = "media/v1"
+data_dir = "plugins/media"
+data_file = "journal.jsonl"
+# Journal des dépôts : indicatif, la station n'en dépend pas.
+refresh_secs = 0
+stale_after_secs = 0
+needs_root = false
+platforms = ["linux-x86_64", "linux-aarch64", "linux-armv7"]
+# Origine : Astroport.ONE ajouter_media.sh (acquisition, encodage H.264/AAC, métadonnées TMDB, yt-dlp)

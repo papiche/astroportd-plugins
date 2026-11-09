@@ -1,0 +1,46 @@
+{
+  "schema": "media/v1",
+  "generated_at": 1794070000,
+  "generator": { "plugin": "media", "version": "0.1.0" },
+  "type": "film",
+  "file": "Le_Voyage_de_Chihiro_2001.mp4",
+  "title": "Le Voyage de Chihiro",
+  "original_title": "千と千尋の神隠し",
+  "tagline": null,
+  "overview": "Chihiro, dix ans, se retrouve dans un monde peuplé d'esprits…",
+  "year": 2001,
+  "release_date": "2001-07-20",
+  "runtime_min": 125,
+  "genres": ["Animation", "Familial", "Fantastique"],
+  "keywords": ["esprit", "bain public", "sorcière"],
+  "countries": ["JP"],
+  "original_language": "ja",
+  "spoken_languages": ["ja"],
+  "certification": { "country": "FR", "value": "U" },
+  "rating": { "source": "tmdb", "value": 8.5, "max": 10, "votes": 17000 },
+  "collection": null,
+  "companies": ["Studio Ghibli"],
+  "people": {
+    "cast": [
+      { "name": "Rumi Hiiragi", "character": "Chihiro (voix)", "order": 0, "ids": { "tmdb": 19587 }, "photo": null }
+    ],
+    "crew": [
+      { "name": "Hayao Miyazaki", "job": "Director", "department": "Directing", "ids": { "tmdb": 608, "wikidata": "Q55400" } },
+      { "name": "Hayao Miyazaki", "job": "Screenplay", "department": "Writing", "ids": { "tmdb": 608 } },
+      { "name": "Joe Hisaishi", "job": "Original Music Composer", "department": "Sound", "ids": { "tmdb": 636 } }
+    ]
+  },
+  "series": null,
+  "music": null,
+  "ids": { "tmdb": 129, "imdb": "tt0245429", "wikidata": "Q155653" },
+  "artwork": { "poster": "Le_Voyage_de_Chihiro_2001.poster.jpg", "backdrop": "Le_Voyage_de_Chihiro_2001.backdrop.jpg" },
+  "subtitles": [ { "file": "Le_Voyage_de_Chihiro_2001.fr.vtt", "lang": "fr", "label": "Français", "origin": "embedded" } ],
+  "technical": {
+    "duration_s": 7507.4, "size": 1012345678, "mime": "video/mp4", "sha256": null, "container": "mp4",
+    "video": { "codec": "h264", "width": 1280, "height": 692, "fps": 23.976 },
+    "audio": [ { "codec": "aac", "lang": "fra", "channels": 2, "default": true }, { "codec": "aac", "lang": "jpn", "channels": 2, "default": false } ],
+    "transcoded": true
+  },
+  "source": { "kind": "disc", "rights": "private_copy", "acquired_at": 1794000000 },
+  "sharing": { "level": "circle" }
+}

@@ -1,0 +1,8 @@
+{
+  "schema": "media/v1", "generated_at": 1794070000, "type": "episode",
+  "file": "S01E03.mp4", "title": "Le Chant du loup", "year": 2019, "genres": ["Drame"],
+  "people": { "cast": [], "crew": [ { "name": "Jane Doe", "job": "Director" } ] },
+  "series": { "name": "Ma Série", "season": 1, "episode": 3, "episode_count": 8, "air_date": "2019-03-14", "ids": { "tmdb": 1234 } },
+  "source": { "kind": "broadcast", "rights": "private_copy" },
+  "sharing": { "level": "private" }
+}

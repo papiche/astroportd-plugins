@@ -1,0 +1,9 @@
+{
+  "schema": "media/v1", "generated_at": 1794070000, "type": "music",
+  "file": "003_Artiste_-_Morceau.mp3", "title": "Morceau",
+  "music": { "artist": "Artiste", "album": null, "track": 3, "from_mix": { "title": "Mix d'été", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "start_s": 754 } },
+  "artwork": { "cover": "003_Artiste_-_Morceau.jpg" },
+  "technical": { "duration_s": 212.0, "size": 5100000, "mime": "audio/mpeg" },
+  "source": { "kind": "web", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "licence": "youtube-standard", "rights": "private_copy" },
+  "sharing": { "level": "circle" }
+}

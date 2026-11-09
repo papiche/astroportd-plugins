@@ -1,0 +1,14 @@
+# Manifeste d'un plugin système d'astroportd.
+name = "dnslink"
+version = "0.1.0"
+description = "Publication DNSLink OVH (sites IPFS, stations, membres) avec les paramètres d'API inscrits dans NOSTR par chaque coopérative de la station"
+# Pas de contrat de données pour la station : le plugin lit la configuration coopérative (kind 30800) et écrit chez OVH.
+# Le journal des publications est indicatif (sans secret).
+produces = "dnslink/v1"
+data_dir = "plugins/dnslink"
+data_file = "journal.jsonl"
+refresh_secs = 0
+stale_after_secs = 0
+needs_root = false
+platforms = ["linux-x86_64", "linux-aarch64", "linux-armv7"]
+# Origine : Astroport.ONE admin/system/ovh.me.sh (remplacé : plus aucune dépendance à Astroport.ONE ni à cooperative_config.sh)

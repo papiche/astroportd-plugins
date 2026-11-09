@@ -8,7 +8,8 @@ qu'elle n'a pas (root, Bluetooth, matériel) ou des outils lourds, et **prépare
 | Plugin | Ce qu'il apporte | Contrat |
 |---|---|---|
 | [`energy`](energy/) | Consommation électrique (PowerJoular) et production solaire (Victron) de la station : balise publique, cockpit, PAF | `energy/v1` |
-| `media` *(à venir)* | Acquisition et préparation des films, séries, vidéos et musiques (métadonnées comprises) | — |
+| [`dnslink`](dnslink/) | Publication DNSLink OVH (sites IPFS, stations, membres) avec les paramètres d'API inscrits dans NOSTR par **chaque coopérative** de la station : un seul script de référence pour tous les projets | `dnslink/v1` |
+| [`media`](media/) | Acquisition et préparation des films, séries, vidéos et musiques (ffprobe, ffmpeg, yt-dlp, TMDB), déposés dans l'uCloud du membre avec leur fiche | `media/v1` |
 
 ## Le principe : un contrat de fichier, jamais d'exécution
 

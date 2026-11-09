@@ -29,6 +29,10 @@ jobs:
               ref = s.get("$ref", "")
               assert ref.startswith("./") and open("contracts/" + ref[2:]), f"{name} : $ref introuvable"
           print("openapi.yaml : références résolues")
+          for f in glob.glob("contracts/examples/*.json"):
+              kind = json.load(open(f))["schema"].replace("/", "-")
+              jsonschema.validate(json.load(open(f)), json.load(open(f"contracts/{kind}.schema.json")))
+              print("exemple conforme :", f)
           PY
       - name: "Manifestes des plugins"
         run: |

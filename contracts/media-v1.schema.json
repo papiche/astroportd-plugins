@@ -1,0 +1,309 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/papiche/astroportd-plugins/contracts/media-v1.schema.json",
+  "title": "media/v1",
+  "description": "Fiche <nom>.media.json écrite par le plugin media dans l'uCloud d'un membre (WebDAV), à côté du fichier qu'elle décrit, dans /Vidéos/Films, /Vidéos/Séries/<série>/Saison NN, /Vidéos/Autres ou /Musique/<artiste>/<album>. astroportd n'en fait rien : c'est un serveur WebDAV. Elle est lue par les clients (bibliothèque Films / Séries / Musique / Vidéos, recherche par acteur, réalisateur, genre…) ; l'événement vidéo (kind 21/22) est publié par le plugin lui-même, avec la clé du membre, sur le relai Nostr. La fiche est riche : elle constitue la base de la vidéothèque.",
+  "type": "object",
+  "required": ["schema", "generated_at", "type", "file", "title", "source", "sharing"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "media/v1" },
+    "generated_at": { "type": "integer", "minimum": 0, "description": "Écriture de la fiche (secondes Unix)." },
+    "generator": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "plugin": { "type": "string", "examples": ["media"] },
+        "version": { "type": "string" }
+      }
+    },
+    "type": {
+      "enum": ["film", "episode", "video", "music"],
+      "description": "film : long métrage ; episode : épisode d'une série ; video : vidéo hors catalogue (YouTube, souvenir, création) ; music : morceau audio."
+    },
+    "file": {
+      "type": "string",
+      "pattern": "^[^/]+$",
+      "description": "Nom du fichier décrit, dans le même dossier que la fiche."
+    },
+
+    "title": { "type": "string", "minLength": 1, "description": "Titre dans la langue du membre (titre de l'épisode pour un épisode)." },
+    "original_title": { "type": ["string", "null"] },
+    "tagline": { "type": ["string", "null"], "description": "Accroche." },
+    "overview": { "type": ["string", "null"], "description": "Résumé." },
+    "year": { "type": ["integer", "null"], "minimum": 1870, "maximum": 2200 },
+    "release_date": { "$ref": "#/$defs/date_or_null" },
+    "runtime_min": { "type": ["integer", "null"], "minimum": 0, "description": "Durée annoncée par le catalogue ; la durée réelle est dans technical.duration_s." },
+    "genres": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "keywords": { "type": "array", "items": { "type": "string" }, "uniqueItems": true, "description": "Mots-clés du catalogue (TMDB keywords, tags YouTube)." },
+    "countries": { "type": "array", "items": { "$ref": "#/$defs/country" }, "uniqueItems": true, "description": "Pays de production (ISO 3166-1 alpha-2)." },
+    "original_language": { "type": ["string", "null"], "pattern": "^[a-z]{2,3}$" },
+    "spoken_languages": { "type": "array", "items": { "type": "string", "pattern": "^[a-z]{2,3}$" }, "uniqueItems": true },
+    "certification": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["country", "value"],
+      "properties": {
+        "country": { "$ref": "#/$defs/country" },
+        "value": { "type": "string", "examples": ["U", "-12", "PG-13"] }
+      },
+      "description": "Classification d'âge (sert au contrôle parental)."
+    },
+    "rating": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["source", "value", "max"],
+      "properties": {
+        "source": { "type": "string", "examples": ["tmdb"] },
+        "value": { "type": "number", "minimum": 0 },
+        "max": { "type": "number", "exclusiveMinimum": 0 },
+        "votes": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "collection": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "examples": ["Le Seigneur des anneaux"] },
+        "tmdb_id": { "type": ["integer", "null"] }
+      },
+      "description": "Saga à laquelle appartient le film."
+    },
+    "companies": { "type": "array", "items": { "type": "string" }, "description": "Sociétés de production." },
+
+    "people": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Distribution et équipe : de quoi naviguer par acteur ou par réalisateur dans la vidéothèque de ses amis.",
+      "properties": {
+        "cast": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "character": { "type": ["string", "null"] },
+              "order": { "type": ["integer", "null"], "minimum": 0, "description": "Rang au générique (0 = tête d'affiche)." },
+              "ids": { "$ref": "#/$defs/person_ids" },
+              "photo": { "$ref": "#/$defs/artwork_or_null" }
+            }
+          }
+        },
+        "crew": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "job"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "job": {
+                "type": "string",
+                "description": "Fonction, en anglais comme TMDB pour rester comparable entre stations.",
+                "examples": ["Director", "Screenplay", "Writer", "Novel", "Original Music Composer", "Director of Photography", "Producer", "Editor", "Creator"]
+              },
+              "department": { "type": ["string", "null"], "examples": ["Directing", "Writing", "Sound", "Camera", "Production"] },
+              "ids": { "$ref": "#/$defs/person_ids" }
+            }
+          }
+        }
+      }
+    },
+
+    "series": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["name", "season", "episode"],
+      "description": "Obligatoire pour type = episode.",
+      "properties": {
+        "name": { "type": "string" },
+        "original_name": { "type": ["string", "null"] },
+        "season": { "type": "integer", "minimum": 0 },
+        "episode": { "type": "integer", "minimum": 0 },
+        "episode_count": { "type": ["integer", "null"], "minimum": 0, "description": "Nombre d'épisodes de la saison." },
+        "air_date": { "$ref": "#/$defs/date_or_null" },
+        "first_air_date": { "$ref": "#/$defs/date_or_null" },
+        "networks": { "type": "array", "items": { "type": "string" } },
+        "overview": { "type": ["string", "null"], "description": "Résumé de la série (le résumé de l'épisode est dans overview)." },
+        "ids": { "$ref": "#/$defs/work_ids" },
+        "poster": { "$ref": "#/$defs/artwork_or_null" }
+      }
+    },
+
+    "music": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["artist"],
+      "description": "Obligatoire pour type = music.",
+      "properties": {
+        "artist": { "type": "string" },
+        "album": { "type": ["string", "null"] },
+        "album_artist": { "type": ["string", "null"] },
+        "track": { "type": ["integer", "null"], "minimum": 0 },
+        "disc": { "type": ["integer", "null"], "minimum": 0 },
+        "composer": { "type": ["string", "null"] },
+        "isrc": { "type": ["string", "null"], "pattern": "^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}$" },
+        "musicbrainz_recording_id": { "type": ["string", "null"] },
+        "from_mix": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["title", "start_s"],
+          "description": "Morceau extrait d'un mix (repères de la description YouTube).",
+          "properties": {
+            "title": { "type": "string" },
+            "url": { "type": ["string", "null"], "format": "uri" },
+            "start_s": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+
+    "ids": { "$ref": "#/$defs/work_ids" },
+
+    "artwork": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Images déposées à côté de la fiche (jamais une URL distante : la station ne va rien chercher dehors).",
+      "properties": {
+        "poster": { "$ref": "#/$defs/artwork_or_null" },
+        "backdrop": { "$ref": "#/$defs/artwork_or_null" },
+        "still": { "$ref": "#/$defs/artwork_or_null", "description": "Image de l'épisode." },
+        "cover": { "$ref": "#/$defs/artwork_or_null", "description": "Pochette (musique)." },
+        "logo": { "$ref": "#/$defs/artwork_or_null" }
+      }
+    },
+
+    "subtitles": {
+      "type": "array",
+      "description": "Sous-titres en fichiers séparés, à côté de la fiche (WebVTT, lisibles par le navigateur). Origine : piste du fichier, sous-titres de la plateforme (yt-dlp), fichier fourni par le membre. Pas de transcription automatique.",
+      "items": {
+        "type": "object",
+        "required": ["file", "lang"],
+        "additionalProperties": false,
+        "properties": {
+          "file": { "type": "string", "pattern": "^[^/]+\\.vtt$" },
+          "lang": { "type": "string", "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]+)?$" },
+          "label": { "type": ["string", "null"] },
+          "forced": { "type": "boolean", "default": false },
+          "hearing_impaired": { "type": "boolean", "default": false },
+          "origin": { "enum": ["embedded", "platform", "user"] }
+        }
+      }
+    },
+
+    "technical": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Sondage ffprobe du fichier déposé.",
+      "required": ["duration_s", "size", "mime"],
+      "properties": {
+        "duration_s": { "type": "number", "minimum": 0 },
+        "size": { "type": "integer", "minimum": 0, "description": "Octets." },
+        "mime": { "type": "string", "examples": ["video/mp4", "audio/mpeg"] },
+        "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$", "description": "Empreinte du fichier en clair : repère les doublons dans la bibliothèque." },
+        "container": { "type": ["string", "null"] },
+        "video": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "properties": {
+            "codec": { "type": "string" },
+            "width": { "type": "integer", "minimum": 0 },
+            "height": { "type": "integer", "minimum": 0 },
+            "fps": { "type": ["number", "null"], "minimum": 0 },
+            "hdr": { "type": "boolean", "default": false }
+          }
+        },
+        "audio": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "codec": { "type": "string" },
+              "lang": { "type": ["string", "null"] },
+              "channels": { "type": ["integer", "null"], "minimum": 0 },
+              "default": { "type": "boolean" }
+            }
+          }
+        },
+        "transcoded": { "type": "boolean", "description": "Réencodé par le plugin (H.264/AAC) ou déposé tel quel." }
+      }
+    },
+
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "rights"],
+      "properties": {
+        "kind": { "enum": ["disc", "purchase", "broadcast", "web", "own", "other"], "description": "disc : DVD/Blu-ray ; purchase : fichier acheté ; broadcast : enregistrement TV ; web : copie d'une page (YouTube…) ; own : création du membre." },
+        "url": { "type": ["string", "null"], "format": "uri", "description": "Page d'origine pour une copie web." },
+        "uploader": { "type": ["string", "null"], "description": "Chaîne ou compte d'origine (web)." },
+        "licence": { "type": ["string", "null"], "description": "Licence déclarée par la source, en identifiant SPDX si possible.", "examples": ["CC-BY-4.0", "CC-BY-NC-SA-4.0", "youtube-standard"] },
+        "rights": {
+          "enum": ["private_copy", "free_licence", "public_domain", "owner", "licensed"],
+          "description": "private_copy : copie privée d'une œuvre protégée ; free_licence : licence libre ; public_domain ; owner : le membre est l'auteur ; licensed : le membre détient une licence de diffusion."
+        },
+        "acquired_at": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+
+    "sharing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level"],
+      "properties": {
+        "level": {
+          "enum": ["private", "circle", "public"],
+          "description": "private : le membre seul, aucun événement ; circle : ses amis N¹ (le plugin publie l'événement vidéo, la clé du fichier leur est remise chiffrée par le partage de la station) ; public : site public (non pris en charge par le plugin pour l'instant)."
+        },
+        "price_zen_cents": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Accès payant (centimes de Ẑen) : réservé aux œuvres dont le membre détient les droits (rights = owner ou licensed)."
+        }
+      }
+    }
+  },
+
+  "allOf": [
+    { "if": { "properties": { "type": { "const": "episode" } } }, "then": { "required": ["series"], "properties": { "series": { "type": "object" } } } },
+    { "if": { "properties": { "type": { "const": "music" } } }, "then": { "required": ["music"], "properties": { "music": { "type": "object" } } } },
+    {
+      "if": { "properties": { "sharing": { "required": ["price_zen_cents"] } } },
+      "then": { "properties": { "source": { "properties": { "rights": { "enum": ["owner", "licensed"] } } } } }
+    },
+    {
+      "if": { "properties": { "sharing": { "properties": { "level": { "const": "public" } } } } },
+      "then": { "properties": { "source": { "properties": { "rights": { "enum": ["free_licence", "public_domain", "owner", "licensed"] } } } } }
+    }
+  ],
+
+  "$defs": {
+    "date_or_null": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "country": { "type": "string", "pattern": "^[A-Z]{2}$" },
+    "artwork_or_null": { "type": ["string", "null"], "pattern": "^[^/]+\\.(jpg|jpeg|png|webp)$", "description": "Nom d'une image dans le même dossier." },
+    "work_ids": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "tmdb": { "type": ["integer", "null"], "minimum": 1 },
+        "imdb": { "type": ["string", "null"], "pattern": "^tt[0-9]{7,9}$" },
+        "wikidata": { "type": ["string", "null"], "pattern": "^Q[0-9]+$" },
+        "tvdb": { "type": ["integer", "null"], "minimum": 1 },
+        "youtube": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]{11}$" }
+      }
+    },
+    "person_ids": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "tmdb": { "type": ["integer", "null"], "minimum": 1 },
+        "imdb": { "type": ["string", "null"], "pattern": "^nm[0-9]{7,9}$" },
+        "wikidata": { "type": ["string", "null"], "pattern": "^Q[0-9]+$" }
+      }
+    }
+  }
+}

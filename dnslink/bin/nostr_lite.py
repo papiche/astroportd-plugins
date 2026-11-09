@@ -1,0 +1,1 @@
+../../media/bin/nostr_lite.py

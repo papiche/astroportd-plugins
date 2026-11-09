@@ -1,0 +1,6 @@
+{
+  "schema": "media/v1", "generated_at": 1794070000, "type": "video",
+  "file": "mon_court_metrage.mp4", "title": "Mon court métrage",
+  "source": { "kind": "own", "rights": "owner", "licence": "CC-BY-NC-4.0" },
+  "sharing": { "level": "circle", "price_zen_cents": 300 }
+}

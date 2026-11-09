@@ -13,8 +13,17 @@ info:
     l'échange se fait par ces fichiers, écrits de façon atomique (fichier temporaire puis renommage),
     au format versionné déclaré dans le `plugin.toml` du plugin (`produces = "energy/v1"`).
     Un fichier invalide ou périmé est ignoré par la station, qui le dit au Capitaine.
+
+    Exception : un plugin qui agit **pour un membre** (media) écrit lui-même dans l'uCloud de ce membre,
+    par WebDAV et avec un jeton qu'il lui a confié (/Vidéos/Films, /Vidéos/Séries/<série>/Saison NN,
+    /Vidéos/Autres, /Musique/<artiste>/<album>), avec la fiche `<nom>.media.json` à côté du fichier ; il
+    publie l'événement vidéo (kind 21/22) sur le relai Nostr avec la clé du membre, comme tout client.
+    astroportd ne réagit à rien : il reste un serveur WebDAV qui partage en P2P, N¹ ou N².
+    Exemples conformes : `contracts/examples/`.
 paths: {}
 components:
   schemas:
     EnergyV1:
       $ref: './energy-v1.schema.json'
+    MediaV1:
+      $ref: './media-v1.schema.json'
