@@ -32,6 +32,16 @@ qu'elle n'a pas (root, Bluetooth, matériel) ou des outils lourds, et **prépare
 
 ## Installer un plugin
 
+Le plus simple : le script présente les plugins, clone ce dépôt (`~/.zen/astroportd-plugins`) et lance l'`install.sh` de ceux que vous choisissez.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/papiche/astroportd-plugins/main/install-plugins.sh | bash
+./install-plugins.sh --list          # présente, n'installe rien
+./install-plugins.sh media energy    # sans question
+```
+
+Ou à la main :
+
 ```bash
 git clone https://github.com/papiche/astroportd-plugins.git
 cd astroportd-plugins/energy
