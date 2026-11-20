@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""media-add : prépare un film, un épisode, une vidéo ou un morceau et le dépose dans l'uCloud d'un membre.
+"""media-add : prépare un film, un épisode, une vidéo, un morceau ou les morceaux d'un mix et les dépose dans l'uCloud d'un membre.
 
 Remplace Astroport.ONE/ajouter_media.sh, et tout se passe ici : astroportd reste un serveur WebDAV qui partage en P2P, N¹ ou N².
 Le plugin sonde (ffprobe), réencode (ffmpeg), télécharge (yt-dlp), interroge le catalogue TMDB, puis **écrit lui-même** dans l'uCloud
 du membre, par WebDAV et avec son jeton : /Vidéos/Films, /Vidéos/Séries/<série>/Saison NN, /Vidéos/Autres, /Musique/<artiste>/<album>,
 avec la fiche `<nom>.media.json` à côté (contrat `media/v1`). Pour un partage `circle`, il signe avec la clé du membre (celle de la
-machine, jamais copiée) et publie l'événement vidéo (NIP-71, kind 21/22) sur le relai, comme n'importe quel client Nostr.
+machine, jamais copiée) et publie l'événement vidéo (NIP-71, kind 21/22 ; un morceau est un kind 21 dont l'`imeta` est audio)
+sur le relai, comme n'importe quel client Nostr. Un mix devient une playlist NIP-51 (kind 30005) de ses morceaux.
 
     media-add film.mkv --type film --title "Le Voyage de Chihiro" --year 2001 --level circle
     media-add https://www.youtube.com/watch?v=… --type video --level private
     media-add fichier.mp4 --title "Essai" --dry-run /tmp/sortie      (rien n'est envoyé : tout est écrit dans le dossier)
+    media-add https://www.youtube.com/watch?v=… --type mix --level circle   (un mp3 par morceau de la tracklist, puis la playlist)
 
 Configuration : ~/.zen/astroportd/plugins/media/config.json (écrit par setup.sh, droits 0600).
 """
@@ -30,19 +32,22 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import djmix  # noqa: E402
 import nostr_lite as nl  # noqa: E402
 
-VERSION = "0.1.0"
+VERSION = "0.3.0"
 STATION_HOME = Path(os.environ.get("ASTROPORTD_HOME", Path.home() / ".zen" / "astroportd"))
 CONFIG = STATION_HOME / "plugins" / "media" / "config.json"
 JOURNAL = STATION_HOME / "plugins" / "media" / "journal.jsonl"
 NOSTR_DIR = Path.home() / ".zen" / "game" / "nostr"
 CONSENT_TEXT = "J'atteste que les œuvres que je dépose dans mon uCloud sont des copies réalisées pour mon usage strictement privé (article L. 122-5, 2° du Code de la propriété intellectuelle), que je les possède légitimement, et qu'elles ne seront partagées qu'avec mon cercle d'amis de confiance (N¹)."
-MAX_BYTES = 1024 << 20  # plafond de la station (1 024 Mo)
+MAX_BYTES = 16 << 30  # plus gros fichier qu'une station accepte (ZEN Card, Capitaine) ; un MULTIPASS est limité à 4 Gio, la station le dit au dépôt
 TMDB = "https://api.themoviedb.org/3"
 TMDB_IMG = "https://image.tmdb.org/t/p/w780"
 TEXT_SUBS = {"subrip", "ass", "ssa", "mov_text", "webvtt", "srt", "text"}
 LANG3 = {"fra": "fr", "fre": "fr", "eng": "en", "spa": "es", "deu": "de", "ger": "de", "ita": "it", "por": "pt", "jpn": "ja", "nld": "nl", "dut": "nl", "rus": "ru", "zho": "zh", "chi": "zh", "ara": "ar"}
+# Cookie YouTube du MULTIPASS (mêmes noms et même ordre que process_youtube.sh d'Astroport.ONE).
+COOKIE_FILES = (".youtube.com.cookie", ".cookie.txt", "cookies.txt")
 KEY_JOBS = {"Director", "Screenplay", "Writer", "Novel", "Original Music Composer", "Director of Photography", "Producer", "Editor", "Creator"}
 
 
@@ -179,11 +184,13 @@ def extract_text_subtitles(probe, src, workdir, stem):
 
 # ───────────────────────────── Sources (yt-dlp) ─────────────────────────────
 
-def ytdlp_fetch(url, workdir, kind, langs="fr,en"):
-    """Télécharge `url` avec yt-dlp. Rend (fichier média, infos yt-dlp, sous-titres {fichier: lang})."""
-    cmd = ["yt-dlp", "--no-playlist", "--write-info-json", "--no-progress", "-o", str(workdir / "%(id)s.%(ext)s")]
+def ytdlp_fetch(url, workdir, kind, langs="fr,en", cookies=()):
+    """Télécharge `url` avec yt-dlp. Rend (fichier média, infos yt-dlp, sous-titres {fichier: lang}).
+
+    Un morceau garde sa pochette et ses métadonnées dans le mp3 (comme l'ancien Open With), et la pochette à part en jpg."""
+    cmd = ["yt-dlp", "--no-playlist", "--write-info-json", "--no-progress", *cookies, "-o", str(workdir / "%(id)s.%(ext)s")]
     if kind == "music":
-        cmd += ["-x", "--audio-format", "mp3", "--audio-quality", "0"]
+        cmd += ["-x", "--audio-format", "mp3", "--audio-quality", "0", "--embed-metadata", "--embed-thumbnail", "--write-thumbnail", "--convert-thumbnails", "jpg"]
     else:
         cmd += ["-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4", "--write-subs", "--sub-langs", langs, "--convert-subs", "vtt"]
     run(cmd + [url], 3600)
@@ -202,11 +209,28 @@ def ytdlp_fetch(url, workdir, kind, langs="fr,en"):
     return media, info, subs
 
 
+def ytdlp_json(args, cookies, timeout=300):
+    """Lignes JSON de `yt-dlp --dump-json` (métadonnées d'une vidéo, résultats d'une recherche), sans rien télécharger."""
+    out = run(["yt-dlp", "--skip-download", "--no-warnings", *cookies, "--dump-json", *args], timeout)
+    docs = []
+    for line in out.decode("utf-8", "replace").splitlines():
+        try:
+            docs.append(json.loads(line))
+        except ValueError:
+            continue
+    return docs
+
+
+def youtube_id(info):
+    yid = str((info or {}).get("id") or "")
+    return yid if re.fullmatch(r"[A-Za-z0-9_-]{11}", yid) else None
+
+
 def web_defaults(info):
     """Valeurs par défaut tirées des informations yt-dlp."""
     date = str(info.get("upload_date") or "")
     year = int(date[:4]) if re.fullmatch(r"\d{8}", date) else None
-    yid = info.get("id") if re.fullmatch(r"[A-Za-z0-9_-]{11}", str(info.get("id") or "")) else None
+    yid = youtube_id(info)
     return {
         "title": info.get("track") or info.get("title") or "Sans titre",
         "overview": (info.get("description") or "").strip()[:4000] or None,
@@ -410,6 +434,71 @@ class Dav:
     def delete(self, path):
         self.request("DELETE", path)
 
+    def api(self, method, path, params=None, body=None):
+        """Appel JSON à l'API de la station (`/api/v1/…`), avec le même jeton ; rend (statut, réponse décodée ou None)."""
+        c = self._conn()
+        try:
+            url = path + ("?" + urllib.parse.urlencode(params) if params else "")
+            data = json.dumps(body).encode() if body is not None else None
+            headers = {"Authorization": self.auth, "Accept": "application/json", **({"Content-Type": "application/json"} if data else {})}
+            c.request(method, url, body=data, headers=headers)
+            r = c.getresponse()
+            raw = r.read()
+        except OSError as e:
+            return 0, {"error": str(e)}
+        finally:
+            c.close()
+        try:
+            return r.status, json.loads(raw) if raw else None
+        except ValueError:
+            return r.status, None
+
+
+class FromFriend(Exception):
+    """L'œuvre est déjà chez un ami : sa copie est demandée au lieu d'un nouveau dépôt. `report` dit laquelle."""
+
+    def __init__(self, report):
+        super().__init__(report.get("message", ""))
+        self.report = report
+
+
+YOUTUBE_URL = re.compile(r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|live/|embed/)|youtu\.be/|music\.youtube\.com/watch\?(?:.*&)?v=)([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])")
+
+
+def youtube_id_of_url(url):
+    """Identifiant d'une vidéo YouTube lu dans son adresse, sans rien télécharger ; None pour une autre adresse."""
+    m = YOUTUBE_URL.search(url or "")
+    return m.group(1) if m else None
+
+
+def friend_copy(dav, work):
+    """Déduplication sociale : avant de télécharger, réencoder et déposer, demande à la station si un ami a déjà l'œuvre
+    `work` ({tmdb} d'un film, {youtube} d'une vidéo ou d'un morceau, {tv|series, season, episode} d'un épisode). Si oui,
+    sa copie est demandée — le **même** fichier chiffré, qui ne fait pas grossir les disques — et `FromFriend` arrête le
+    dépôt. Station muette ou ancienne : None, le dépôt continue comme avant."""
+    params = {k: v for k, v in work.items() if v is not None}
+    status, body = dav.api("GET", "/api/v1/ucloud/media/friends/match", params)
+    if status != 200 or not isinstance(body, dict):
+        if status not in (404, 503):
+            say(f"amis non consultés (HTTP {status}) : dépôt d'une nouvelle copie")
+        return None
+    item = body.get("match")
+    if not item:
+        return None
+    who = item.get("author_label") or "un ami"
+    title = item.get("title") or "?"
+    report = {"from_friend": who, "title": title, "sources": item.get("sources"), "event_id": item.get("event_id")}
+    if item.get("copied"):
+        raise FromFriend({**report, "state": "copied", "path": item["copied"], "message": f"« {title} » est déjà dans votre uCloud : {item['copied']}"})
+    status, res = dav.api("POST", "/api/v1/ucloud/media/friends/request", body={"event_id": item.get("event_id")})
+    if status != 200 or not isinstance(res, dict):
+        why = (res or {}).get("error") if isinstance(res, dict) else None
+        say(f"« {title} » est chez {who}, mais la copie n'a pas pu être demandée ({why or f'HTTP {status}'}) : dépôt d'une nouvelle copie")
+        return None
+    state = res.get("state")
+    msg = {"copied": "est déjà dans votre uCloud", "sent": "a été copié depuis", "asked": "est demandé à"}.get(state, "est demandé à")
+    raise FromFriend({**report, "state": state, "path": res.get("path"), "message": f"« {title} » {msg} {who if state != 'copied' else ''}".rstrip() + " : rien n'a été téléchargé ni envoyé"})
+
 
 def library_plan(kind, fields, series, music):
     """Dossier et nom (sans extension) dans l'uCloud : /Vidéos/Films, /Vidéos/Séries/<série>/Saison NN, /Vidéos/Autres, /Musique/<artiste>/<album>."""
@@ -419,10 +508,14 @@ def library_plan(kind, fields, series, music):
         name = clean_name(series["name"])
         return f"/Vidéos/Séries/{name}/Saison {series['season']:02d}", f"{name} S{series['season']:02d}E{series['episode']:02d}"
     if kind == "music":
-        artist = clean_name((music or {}).get("artist") or "Inconnu")
-        album = clean_name((music or {}).get("album") or "Singles")
-        track = (music or {}).get("track")
-        return f"/Musique/{artist}/{album}", (f"{track:02d} - {title}" if track is not None else title)
+        music = music or {}
+        artist = music.get("artist") or "Inconnu"
+        # Compilation, mix : l'album se range sous son artiste (le DJ), chaque nom de fichier porte l'artiste du morceau.
+        shelf = music.get("album_artist") or artist
+        album = clean_name(music.get("album") or "Singles")
+        name = title if shelf == artist else clean_name(f"{artist} - {title}")
+        track = music.get("track")
+        return f"/Musique/{clean_name(shelf)}/{album}", (f"{track:02d} - {name}" if track is not None else name)
     stem = f"{title} ({year})" if year else title
     return ("/Vidéos/Films" if kind == "film" else "/Vidéos/Autres"), stem
 
@@ -474,7 +567,6 @@ def video_event_tags(fiche, cid):
         imeta += [f"duration {t['duration_s']:.3f}", f"bitrate {int(t['size'] * 8 / t['duration_s'])}"]
     imeta.append("encrypted uenc-v2")
     episode = fiche["type"] == "episode"
-    private = fiche["source"]["rights"] == "private_copy"
     tags = [
         ["title", display_title(fiche)], ["url", url], ["m", t["mime"]], ["dim", dim], imeta, ["size", str(t["size"])],
         ["duration", str(round(t["duration_s"]))], ["published_at", str(int(time.time()))], ["x", sha],
@@ -483,7 +575,19 @@ def video_event_tags(fiche, cid):
         ["-"],  # NIP-70 : événement protégé, jamais republié par un tiers
         ["L", "genre"], ["L", "license"],
     ]
-    if private:
+    tags += common_tags(fiche)
+    if episode:
+        s = fiche["series"]
+        tags += [["series_name", s["name"]], ["season_number", str(s["season"])], ["episode_number", str(s["episode"])]]
+        if fiche["title"] != s["name"]:
+            tags.append(["episode_name", fiche["title"]])
+    return kind, tags
+
+
+def common_tags(fiche):
+    """Droits (copie privée, licence), genres NIP-32, année et identifiants externes : communs aux vidéos et aux morceaux."""
+    tags = []
+    if fiche["source"]["rights"] == "private_copy":
         tags += [["t", "private-copy"], ["l", "private-copy-cpi-l122-5", "license"]]
     elif fiche["source"].get("licence"):
         tags.append(["l", fiche["source"]["licence"], "license"])
@@ -497,12 +601,58 @@ def video_event_tags(fiche, cid):
         tags.append(["i", f"tmdb:{ids['tmdb']}"])
     if ids.get("youtube"):
         tags.append(["i", f"youtube:{ids['youtube']}"])
-    if episode:
-        s = fiche["series"]
-        tags += [["series_name", s["name"]], ["season_number", str(s["season"])], ["episode_number", str(s["episode"])]]
-        if fiche["title"] != s["name"]:
-            tags.append(["episode_name", fiche["title"]])
-    return kind, tags
+    tv = ((fiche.get("series") or {}).get("ids") or {}).get("tmdb")
+    if fiche["type"] == "episode" and tv:
+        tags.append(["i", f"tmdb-tv:{tv}"])  # la série : le même épisode se reconnaît chez un ami
+    return tags
+
+
+def music_event_tags(fiche, cid, cover_cid=None):
+    """Tags d'un morceau : un événement NIP-71 (kind 21, ou 22 sous 60 s) dont l'`imeta` est **audio** (NIP-71 le permet :
+    `m audio/…`, `duration`, `bitrate`) et l'image la pochette. Ni vidéo fabriquée, ni nouveau kind : le relai réserve déjà
+    les kinds 21/22 au cercle N¹ de l'auteur, et un client NIP-71 joue le son avec la pochette en affiche."""
+    t, m = fiche["technical"], fiche["music"]
+    kind = 22 if round(t["duration_s"]) <= 60 else 21
+    url, sha = f"/ipfs/{cid}", t["sha256"]
+    imeta = ["imeta", f"url {url}", f"m {t['mime']}", f"x {sha}", f"size {t['size']}"]
+    if t["duration_s"] > 0:
+        imeta += [f"duration {t['duration_s']:.3f}", f"bitrate {int(t['size'] * 8 / t['duration_s'])}"]
+    if cover_cid:
+        imeta.append(f"image /ipfs/{cover_cid}")
+    imeta.append("encrypted uenc-v2")
+    tags = [
+        ["title", f"{m['artist']} — {fiche['title']}"], ["url", url], ["m", t["mime"]], imeta, ["size", str(t["size"])],
+        ["duration", str(round(t["duration_s"]))], ["published_at", str(int(time.time()))], ["x", sha], ["encrypted", "uenc-v2"],
+        ["t", "music"], ["t", "short" if kind == 22 else "regular"], ["-"], ["L", "genre"], ["L", "license"],
+        ["artist", m["artist"]],
+    ]
+    if cover_cid:
+        tags.append(["image", f"/ipfs/{cover_cid}"])
+    for key in ("album", "album_artist"):
+        if m.get(key):
+            tags.append([key, m[key]])
+    if m.get("track") is not None:
+        tags.append(["track_number", str(m["track"])])
+    return kind, tags + common_tags(fiche)
+
+
+def playlist_event_tags(mix, entries):
+    """Playlist d'un mix : NIP-51 « curation set » (kind 30005), qui liste des vidéos NIP-71 — ici les morceaux, dans
+    l'ordre du mix. Remplaçable (`d`) : redéposer le mix met la liste à jour. Protégée comme les morceaux (NIP-70)."""
+    tags = [["d", f"mix:{mix['youtube']}" if mix.get("youtube") else f"mix:{genre_slug(mix['title'])}"], ["title", mix["title"]], ["t", "music"], ["t", "mix"], ["-"]]
+    if mix.get("dj"):
+        tags.append(["description", f"Mix de {mix['dj']}"])
+    if mix.get("youtube"):
+        tags.append(["i", f"youtube:{mix['youtube']}"])
+    return 30005, tags + [["e", e] for e in entries]
+
+
+def m3u8(entries):
+    """Playlist lisible par tout lecteur (VLC, client WebDAV) : chemins relatifs au dossier de l'album."""
+    lines = ["#EXTM3U"]
+    for e in entries:
+        lines += [f"#EXTINF:{round(e['duration_s'])},{e['label']}", e["file"]]
+    return "\n".join(lines) + "\n"
 
 
 def relay_of(cfg):
@@ -534,7 +684,7 @@ def parser():
     p = argparse.ArgumentParser(prog="media-add", description=__doc__.split("\n\n")[0])
     p.add_argument("source", nargs="?", help="fichier local ou adresse web (yt-dlp)")
     p.add_argument("--attest", action="store_true", help="poser l'attestation de copie privée sans rien déposer (sinon elle est posée seule au premier dépôt)")
-    p.add_argument("--type", choices=["film", "episode", "video", "music"], help="nature (défaut : film pour un fichier, video pour une adresse web)")
+    p.add_argument("--type", choices=["film", "episode", "video", "music", "mix"], help="nature (défaut : film pour un fichier, video pour une adresse web) ; mix : un morceau par entrée de la tracklist")
     p.add_argument("--title")
     p.add_argument("--year", type=int)
     p.add_argument("--series")
@@ -553,27 +703,61 @@ def parser():
     p.add_argument("--account", help="compte (e-mail) du membre ; défaut : le seul de la configuration")
     p.add_argument("--dry-run", metavar="DOSSIER", help="écrire fichiers, fiche et événement dans ce dossier, sans rien envoyer")
     p.add_argument("--no-event", action="store_true", help="déposer sans publier d'événement vidéo")
+    p.add_argument("--own-copy", action="store_true", help="déposer sa propre copie même si un ami a déjà l'œuvre (défaut : demander la sienne, le même fichier, sans rien télécharger ni envoyer)")
+    yt = p.add_argument_group("YouTube (défaut : le cookie du MULTIPASS, ~/.zen/game/nostr/<compte>/.youtube.com.cookie)")
+    yt.add_argument("--cookies", metavar="FICHIER", help="fichier de cookies (format Netscape) passé à yt-dlp")
+    yt.add_argument("--cookies-from-browser", metavar="NAVIGATEUR", help="cookies du navigateur (firefox, chromium…)")
+    mx = p.add_argument_group("Mix (--type mix)")
+    mx.add_argument("--limit", type=int, metavar="N", help="seulement les N premiers morceaux de la tracklist")
+    mx.add_argument("--candidates", type=int, default=5, metavar="N", help="résultats YouTube examinés par morceau (défaut : 5)")
+    mx.add_argument("--min-match", type=float, default=0.5, metavar="0-1", help="part minimale des mots du morceau retrouvés dans le résultat (défaut : 0,5)")
     return p
 
 
-def prepare(args, work, get=None, exists=None):
+def music_cover(probe, media, work, dest):
+    """Pochette d'un morceau, déposée à côté (contrat : `artwork.cover`) : la miniature écrite par yt-dlp, sinon l'image
+    intégrée au fichier (mp3 avec pochette). Rend son chemin, ou None (un morceau sans pochette reste un morceau)."""
+    thumb = next(iter(sorted(work.glob("*.jpg"))), None)
+    if thumb:
+        shutil.copy2(thumb, dest)
+        return dest
+    if any(st.get("disposition", {}).get("attached_pic") for st in probe.get("streams", [])):
+        try:
+            run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(media), "-map", "0:v:0", "-frames:v", "1", str(dest)], 120)
+            return dest
+        except Refused as e:
+            say(f"pochette ignorée : {e}")
+    return None
+
+
+def prepare(args, work, get=None, exists=None, friend=None):
     """Prépare tout dans `work` (fichiers + fiche) ; rend (fiche, {nom: chemin local}, stem, chemin de la fiche, dossier de l'uCloud).
 
     `get(chemin, paramètres)` remplace l'accès à TMDB (tests) ; sans lui, la clé est lue dans TMDB_API_KEY.
     `exists(dossier, nom)` dit si la cible est déjà dans l'uCloud : on s'arrête alors avant tout réencodage.
+    `friend(œuvre)` (voir `friend_copy`) lève `FromFriend` si un ami a déjà l'œuvre : interrogé dès que l'œuvre est connue,
+    avant le téléchargement (adresse YouTube) ou avant le réencodage et l'envoi (film, épisode reconnus).
     """
     is_url = re.match(r"https?://", args.source) is not None
     kind = args.type or ("video" if is_url else "film")
     source_kind = args.source_kind or ("web" if is_url else "other")
     info, sub_files = None, {}
+    mix = getattr(args, "from_mix", None)
+    if is_url and kind == "music" and args.title and args.artist and exists:
+        # Titre et artiste connus (morceau d'un mix) : un doublon est écarté avant tout téléchargement.
+        folder, stem = library_plan(kind, {"title": args.title}, None, {"artist": args.artist, "album": args.album, "album_artist": getattr(args, "album_artist", None), "track": args.track})
+        if exists(folder, f"{stem}.mp3"):
+            raise Refused(f"{folder}/{stem}.mp3 existe déjà : rien n'a été téléchargé ni envoyé")
+    if friend and is_url and youtube_id_of_url(args.source):
+        friend({"youtube": youtube_id_of_url(args.source)})
     if is_url:
-        media, info, sub_files = ytdlp_fetch(args.source, work, kind)
+        media, info, sub_files = ytdlp_fetch(args.source, work, kind, cookies=getattr(args, "cookie_args", ()))
     else:
         media = Path(args.source)
         if not media.is_file():
             raise Refused(f"{media} : fichier introuvable")
         if media.stat().st_size > MAX_BYTES:
-            raise Refused(f"{media.stat().st_size >> 20} Mo : la station refuse plus de {MAX_BYTES >> 20} Mo")
+            raise Refused(f"{media.stat().st_size >> 20} Mo : aucune station n'accepte plus de {MAX_BYTES >> 30} Gio")
     web = web_defaults(info) if info else {}
 
     fields = {"title": args.title or web.get("title"), "year": args.year or web.get("year"), "overview": web.get("overview"), "keywords": web.get("keywords")}
@@ -602,10 +786,14 @@ def prepare(args, work, get=None, exists=None):
                 artwork["still"] = still
         fields["title"] = fields.get("title") or args.title or f"Épisode {args.episode}"
     elif kind == "music":
-        music = {"artist": args.artist or web.get("artist"), "album": args.album or web.get("album"), "track": args.track}
+        music = {"artist": args.artist or web.get("artist"), "album": args.album or web.get("album"), "album_artist": getattr(args, "album_artist", None), "track": args.track, "from_mix": mix}
         music = {k: v for k, v in music.items() if v is not None}
     if web.get("youtube") and "ids" not in fields:
         fields["ids"] = {"youtube": web["youtube"]}
+    if friend and kind == "film" and (fields.get("ids") or {}).get("tmdb"):
+        friend({"tmdb": fields["ids"]["tmdb"]})
+    elif friend and kind == "episode":
+        friend({"tv": (series.get("ids") or {}).get("tmdb"), "series": series["name"], "season": series["season"], "episode": series["episode"]})
 
     if not fields.get("title"):
         fields["title"] = media.stem
@@ -634,7 +822,7 @@ def prepare(args, work, get=None, exists=None):
     shutil.copy2(upload, target)
     sha, size = sha256_file(target)
     if size > MAX_BYTES:
-        raise Refused(f"{size >> 20} Mo après traitement : la station refuse plus de {MAX_BYTES >> 20} Mo")
+        raise Refused(f"{size >> 20} Mo après traitement : aucune station n'accepte plus de {MAX_BYTES >> 30} Gio")
     technical = technical_of(probe, size, sha, transcoded)
 
     # Images et sous-titres.
@@ -656,6 +844,10 @@ def prepare(args, work, get=None, exists=None):
             subs.append({"file": new, "lang": lang, "origin": "platform"})
         for s in subs:
             files[s["file"]] = staged / s["file"]
+    else:
+        cover = music_cover(original_probe, media, work, staged / f"{stem}.cover.jpg")
+        if cover:
+            files[cover.name], artwork["cover"] = cover, cover.name
 
     rights = args.rights or default_rights(source_kind)
     source = {"kind": source_kind, "rights": rights, "acquired_at": int(time.time())}
@@ -710,6 +902,198 @@ def attest(cfg, email):
     return True
 
 
+def cookie_args(args, cfg, email):
+    """Cookies YouTube pour yt-dlp : option explicite, sinon le cookie enregistré du MULTIPASS, sinon aucun."""
+    if args.cookies:
+        return ["--cookies", args.cookies]
+    if args.cookies_from_browser:
+        return ["--cookies-from-browser", args.cookies_from_browser]
+    if email:
+        for name in COOKIE_FILES:
+            f = account_dir(cfg, email) / name
+            if f.is_file():
+                return ["--cookies", str(f)]
+    return []
+
+
+def wants_event(args, fiche):
+    if args.level != "circle" or args.no_event:
+        return False
+    return fiche["type"] == "music" or (fiche["type"] in ("film", "episode", "video") and "video" in fiche["technical"])
+
+
+def event_of(fiche, cids):
+    """(kind, tags) de l'événement d'un dépôt, d'après les CID que la station a donnés aux fichiers."""
+    if fiche["type"] == "music":
+        cover = (fiche.get("artwork") or {}).get("cover")
+        return music_event_tags(fiche, cids[fiche["file"]], cids.get(cover) if cover else None)
+    return video_event_tags(fiche, cids[fiche["file"]])
+
+
+def publish(cfg, seckey, kind, tags, content=""):
+    """Signe et publie ; rend {id, kind, accepted, relay} ou None si le relai est injoignable (dit sur stderr)."""
+    event = nl.sign_event(seckey, kind, tags, content)
+    try:
+        ok, why = nl.publish(relay_of(cfg), event, seckey)
+    except nl.RelayError as e:
+        say(f"événement {kind} non publié : {e}")
+        return None
+    if not ok:
+        say(f"le relai refuse l'événement {kind} : {why}")
+    return {"id": event["id"], "kind": kind, "accepted": ok, "relay": why}
+
+
+def add_one(args, work, cfg, email, dav):
+    """Un dépôt : préparation, envoi, événement. Rend (rapport, fiche)."""
+    exists = (lambda folder, name: dav.etag(f"{folder}/{name}") is not None) if dav else None
+    friend = (lambda w: friend_copy(dav, w)) if dav and not getattr(args, "own_copy", False) else None
+    try:
+        fiche, files, stem, fiche_path, folder = prepare(args, work, exists=exists, friend=friend)
+    except FromFriend as f:
+        say(f.report["message"])
+        journal({"account": email, "title": f.report["title"], "from_friend": f.report["from_friend"], "state": f.report["state"]})
+        return {**f.report, "account": email}, None
+    needs_event = wants_event(args, fiche)
+    if args.dry_run:
+        out = Path(args.dry_run)
+        out.mkdir(parents=True, exist_ok=True)
+        for name, p in files.items():
+            shutil.copy2(p, out / name)
+        shutil.copy2(fiche_path, out / fiche_path.name)
+        report = {"dry_run": str(out), "folder": folder, "fiche": fiche_path.name, "files": sorted(files)}
+        if needs_event:
+            kind, tags = event_of(fiche, {name: "bafkrei-dry-run" for name in files})
+            report["event"] = {"kind": kind, "tags": tags, "content": fiche.get("overview") or ""}
+        return report, fiche
+    if fiche["source"]["rights"] == "private_copy":
+        attest(cfg, email)
+    seckey = secret_of(cfg, email) if needs_event else None
+    cids = deposit(dav, folder, files, fiche_path)
+    result = {"deposited": f"{folder}/{fiche['file']}", "account": email, "event": None}
+    if needs_event:
+        if not cids.get(fiche["file"]):
+            say("la station n'a pas rendu l'empreinte (CID) du fichier : événement non publié")
+        else:
+            kind, tags = event_of(fiche, cids)
+            result["event"] = publish(cfg, seckey, kind, tags, "" if fiche["type"] == "music" else fiche.get("overview") or "")
+    journal({"account": email, "title": fiche["title"], "type": fiche["type"], "path": result["deposited"], "event": result["event"]})
+    return result, fiche
+
+
+def track_args(args, **over):
+    """Arguments d'un dépôt de morceau dérivés de ceux du mix."""
+    base = {**vars(args), "type": "music", "source_kind": "web", "no_catalog": True, "year": None, "tmdb_id": None, "album_artist": None, "from_mix": None, "track": None}
+    return argparse.Namespace(**{**base, **over})
+
+
+def keep_whole(args, work, cfg, email, dav, mix, report):
+    """Mix impossible à couper : il est gardé en entier, un seul morceau rangé chez son DJ (/Musique/<DJ>/Mixes)."""
+    report["whole"] = True
+    if args.dry_run:
+        report["folder"] = library_plan("music", {"title": mix["title"]}, None, {"artist": mix["dj"], "album": "Mixes"})[0]
+        return report
+    result, _ = add_one(track_args(args, title=mix["title"], artist=mix["dj"], album="Mixes"), work, cfg, email, dav)
+    report.update(result)
+    return report
+
+
+def known_track(dav, cfg, seckey, folder, stem):
+    """Morceau déjà déposé (mix relancé) : sa fiche, relue dans l'uCloud, et l'id de son événement retrouvé sur le relai
+    par l'empreinte du fichier — la playlist republiée garde ainsi tous ses morceaux, pas seulement les nouveaux."""
+    raw = dav.get(f"{folder}/{stem}.media.json")
+    try:
+        fiche = json.loads(raw) if raw else None
+    except ValueError:
+        fiche = None
+    if not fiche or not seckey:
+        return fiche, None
+    try:
+        evs = nl.query(relay_of(cfg), {"kinds": [21, 22], "authors": [nl.pubkey(seckey).hex()], "#x": [fiche["technical"]["sha256"]]}, seckey)
+    except (nl.RelayError, KeyError):
+        return fiche, None
+    return fiche, (max(evs, key=lambda e: e["created_at"])["id"] if evs else None)
+
+
+def add_mix(args, work, cfg, email, dav):
+    """Mix de DJ : un mp3 par morceau de la tracklist (cherché par son nom sur YouTube, comme l'ancien
+    youtube_dj_playlist_downloader.py), rangés dans /Musique/<DJ>/<mix>, avec une playlist .m3u8 et, en partage `circle`,
+    un événement par morceau et la playlist NIP-51. Sans tracklist, ou si aucun morceau n'est trouvé : le mix entier."""
+    if not re.match(r"https?://", args.source):
+        raise Refused("un mix se lit à une adresse web (YouTube)")
+    cookies = args.cookie_args
+    docs = ytdlp_json(["--no-playlist", args.source], cookies)
+    if not docs:
+        raise Refused("yt-dlp ne rend aucune information sur ce mix")
+    info = docs[0]
+    mix = {"title": info.get("title") or "Mix", "dj": info.get("uploader") or info.get("channel") or "DJ", "youtube": youtube_id(info), "url": info.get("webpage_url") or args.source}
+    tracks = djmix.extract_tracklist(info.get("description") or "", info.get("chapters"))[: args.limit or None]
+    report = {"mix": mix["title"], "dj": mix["dj"], "account": email}
+    if not tracks:
+        say("aucune tracklist dans ce mix : il est gardé en entier")
+        return keep_whole(args, work, cfg, email, dav, mix, report)
+    folder = library_plan("music", {"title": "-"}, None, {"artist": mix["dj"], "album": mix["title"]})[0]
+    report["folder"] = folder
+    if args.dry_run:
+        report["tracks"] = [{"track": n, "query": q, "start_s": t} for n, (q, t) in enumerate(tracks, 1)]
+        return report
+    seckey = secret_of(cfg, email) if args.level == "circle" and not args.no_event else None
+    deposited, kept, no_match, failed, entries, events, from_friends = [], [], [], [], [], [], []
+    for n, (query, start) in enumerate(tracks, 1):
+        say(f"[{n}/{len(tracks)}] {query}")
+        artist, title = djmix.split_artist_title(query)
+        over = {"title": title, "artist": artist or mix["dj"], "album": mix["title"], "album_artist": mix["dj"], "track": n,
+                "from_mix": {"title": mix["title"], "url": mix["url"], "start_s": start} if start is not None else None}
+        _, stem = library_plan("music", {"title": title}, None, {"artist": over["artist"], "album": mix["title"], "album_artist": mix["dj"], "track": n})
+        fiche = event_id = None
+        if dav.etag(f"{folder}/{stem}.mp3") is not None:
+            fiche, event_id = known_track(dav, cfg, seckey, folder, stem)
+            kept.append(f"{folder}/{stem}.mp3")
+        else:
+            try:
+                hits = ytdlp_json(["--flat-playlist", f"ytsearch{args.candidates}:{query}"], cookies)
+            except Refused as e:
+                failed.append({"track": query, "why": str(e)})
+                continue
+            best = djmix.best_match(query, hits)
+            if not best or best[0] < args.min_match:
+                no_match.append({"track": query, "best": best[2] if best else None, "score": round(best[0], 2) if best else 0})
+                continue
+            sub = work / f"morceau-{n:03d}"
+            sub.mkdir()
+            try:
+                result, fiche = add_one(track_args(args, source=f"https://www.youtube.com/watch?v={best[1]}", **over), sub, cfg, email, dav)
+            except Refused as e:
+                failed.append({"track": query, "why": str(e)})
+                continue
+            finally:
+                shutil.rmtree(sub, ignore_errors=True)
+            if "from_friend" in result:
+                # Morceau déjà chez un ami : sa copie arrive (même fichier), rangée comme chez lui ; elle n'entre pas dans la
+                # playlist de ce mix (son événement est celui de l'ami).
+                from_friends.append({"track": query, "from": result["from_friend"], "state": result["state"]})
+                continue
+            deposited.append(result["deposited"])
+            event_id = (result.get("event") or {}).get("id") if (result.get("event") or {}).get("accepted") else None
+        if fiche:
+            entries.append({"file": fiche["file"], "duration_s": fiche["technical"]["duration_s"], "label": f"{fiche['music']['artist']} - {fiche['title']}"})
+        if event_id:
+            events.append(event_id)
+    report.update({"deposited": deposited, "kept": kept, "no_match": no_match, "failed": failed, "from_friends": from_friends})
+    if not deposited and not kept and not from_friends:
+        say("aucun morceau n'a pu être récupéré : le mix est gardé en entier")
+        return keep_whole(args, work, cfg, email, dav, mix, report)
+    if entries:
+        m3u = work / "playlist.m3u8"
+        m3u.write_text(m3u8(entries), encoding="utf-8")
+        dav.put_file(f"{folder}/{clean_name(mix['title'])}.m3u8", m3u)
+        report["m3u8"] = f"{folder}/{clean_name(mix['title'])}.m3u8"
+    if seckey and events:
+        kind, tags = playlist_event_tags(mix, events)
+        report["playlist"] = publish(cfg, seckey, kind, tags)
+    journal({"account": email, "mix": mix["title"], "deposited": len(deposited), "kept": len(kept), "no_match": len(no_match), "failed": len(failed)})
+    return report
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     work = Path(tempfile.mkdtemp(prefix="media-add-"))
@@ -727,41 +1111,12 @@ def main(argv=None):
         if not args.dry_run:
             email, token = pick_account(cfg, args.account)
         dav = None if args.dry_run else Dav(cfg.get("station_url", ""), email, token, cfg.get("mount", "/dav"))
-        exists = (lambda folder, name: dav.etag(f"{folder}/{name}") is not None) if dav else None
-        fiche, files, stem, fiche_path, folder = prepare(args, work, exists=exists)
-        needs_event = args.level == "circle" and fiche["type"] in ("film", "episode", "video") and not args.no_event and "video" in fiche["technical"]
-        if args.dry_run:
-            out = Path(args.dry_run)
-            out.mkdir(parents=True, exist_ok=True)
-            for name, p in files.items():
-                shutil.copy2(p, out / name)
-            shutil.copy2(fiche_path, out / fiche_path.name)
-            report = {"dry_run": str(out), "folder": folder, "fiche": fiche_path.name, "files": sorted(files)}
-            if needs_event:
-                kind, tags = video_event_tags(fiche, "bafkrei-dry-run")
-                report["event"] = {"kind": kind, "tags": tags, "content": fiche.get("overview") or ""}
+        args.cookie_args = cookie_args(args, cfg, email)
+        if args.type == "mix":
+            report = add_mix(args, work, cfg, email, dav)
             print(json.dumps(report, ensure_ascii=False))
-            return 0
-        if fiche["source"]["rights"] == "private_copy":
-            attest(cfg, email)
-        seckey = secret_of(cfg, email) if needs_event else None
-        cids = deposit(dav, folder, files, fiche_path)
-        result = {"deposited": f"{folder}/{fiche['file']}", "account": email, "event": None}
-        if needs_event:
-            cid = cids.get(fiche["file"])
-            if not cid:
-                say("la station n'a pas rendu l'empreinte (CID) du fichier : événement vidéo non publié")
-            else:
-                kind, tags = video_event_tags(fiche, cid)
-                event = nl.sign_event(seckey, kind, tags, fiche.get("overview") or "")
-                try:
-                    ok, why = nl.publish(relay_of(cfg), event, seckey)
-                    result["event"] = {"id": event["id"], "kind": kind, "accepted": ok, "relay": why}
-                    if not ok:
-                        say(f"le relai refuse l'événement vidéo : {why}")
-                except nl.RelayError as e:
-                    say(f"événement vidéo non publié : {e}")
-        journal({"account": email, "title": fiche["title"], "type": fiche["type"], "path": result["deposited"], "event": result["event"]})
+            return 1 if report.get("failed") else 0
+        result, _ = add_one(args, work, cfg, email, dav)
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except Refused as e:

@@ -7,6 +7,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import socket
 import struct
@@ -16,13 +17,15 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote
+from unittest import mock
+from urllib.parse import parse_qsl, unquote
 
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("media_add", ROOT / "media/bin/media_add.py")
 ma = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ma)
 nl = ma.nl
+dj = ma.djmix
 
 try:
     import jsonschema
@@ -106,6 +109,13 @@ class Catalogue(unittest.TestCase):
         fields, block, still = ma.tmdb_episode(self.get, "Ma Série", 1, 3)
         self.assertEqual((fields["title"], block["name"], block["episode_count"], still), ("Le Chant du loup", "Ma Série", 8, "/s.jpg"))
 
+    def test_the_youtube_id_is_read_from_the_address_without_downloading(self):
+        for url in ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://youtu.be/dQw4w9WgXcQ?t=3", "https://www.youtube.com/watch?list=PL1&v=dQw4w9WgXcQ",
+                    "https://music.youtube.com/watch?v=dQw4w9WgXcQ", "https://www.youtube.com/shorts/dQw4w9WgXcQ"):
+            self.assertEqual(ma.youtube_id_of_url(url), "dQw4w9WgXcQ", url)
+        for url in ("https://vimeo.com/123", "https://www.youtube.com/watch?v=dQw4w9WgXcQx", "https://evil.example/?v=dQw4w9WgXcQ", None):
+            self.assertIsNone(ma.youtube_id_of_url(url), url)
+
     def test_web_defaults_read_ytdlp_infos(self):
         d = ma.web_defaults({"id": "dQw4w9WgXcQ", "title": "Titre", "upload_date": "20240131", "uploader": "Chaîne", "license": "Creative Commons Attribution license (reuse allowed)", "webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"})
         self.assertEqual((d["year"], d["youtube"], d["licence"], d["uploader"]), (2024, "dQw4w9WgXcQ", "CC-BY-4.0", "Chaîne"))
@@ -141,9 +151,41 @@ class FakeStation(BaseHTTPRequestHandler):
 
     files = {}
     dirs = set()
+    # API de la médiathèque des amis : réponse de `match` par question (paramètres triés), demandes reçues, statut forcé.
+    friends = {}
+    asked = []
+    match_status = 200
 
     def log_message(self, *a):
         pass
+
+    def _json(self, status, obj):
+        self._reply(status, json.dumps(obj).encode(), {"Content-Type": "application/json"})
+
+    def _api(self):
+        """Routes `/api/v1/ucloud/media/friends/*` : rend True si la requête leur était adressée."""
+        if not self.path.startswith("/api/"):
+            return False
+        if self.headers.get("Authorization") != "Basic " + base64.b64encode(b"alice@example.org:jeton").decode():
+            self._json(401, {"error": "non authentifié"})
+        elif self.path.startswith("/api/v1/ucloud/media/friends/match?"):
+            q = tuple(sorted(parse_qsl(self.path.split("?", 1)[1])))
+            FakeStation.asked.append(("match", q))
+            if self.match_status != 200:
+                self._json(self.match_status, {"error": "en panne"})
+            else:
+                self._json(200, {"match": self.friends.get(q)})
+        elif self.path == "/api/v1/ucloud/media/friends/request" and self.command == "POST":
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            FakeStation.asked.append(("request", body["event_id"]))
+            self._json(200, {"state": "asked", "at": 1})
+        else:
+            self._json(404, {"error": "inconnu"})
+        return True
+
+    def do_POST(self):
+        if not self._api():
+            self._reply(405)
 
     def _path(self):
         p = unquote(self.path)
@@ -176,6 +218,8 @@ class FakeStation(BaseHTTPRequestHandler):
         self._reply(201)
 
     def do_GET(self):
+        if self._api():
+            return
         data = self.files.get(self._path())
         self._reply(200, data) if data is not None else self._reply(404)
 
@@ -343,6 +387,51 @@ class Library(unittest.TestCase):
         self.assertEqual(ma.library_plan("episode", {"title": "Pilote"}, {"name": "Ma/Série", "season": 1, "episode": 2}, None), ("/Vidéos/Séries/Ma_Série/Saison 01", "Ma_Série S01E02"))
         self.assertEqual(ma.library_plan("video", {"title": "Souvenir"}, None, None), ("/Vidéos/Autres", "Souvenir"))
         self.assertEqual(ma.library_plan("music", {"title": "Morceau"}, None, {"artist": "Artiste", "album": None, "track": 3}), ("/Musique/Artiste/Singles", "03 - Morceau"))
+        # Un mix se range chez son DJ ; chaque fichier porte l'artiste du morceau.
+        self.assertEqual(ma.library_plan("music", {"title": "Titre"}, None, {"artist": "Artiste", "album": "Mon Mix", "album_artist": "DJ X", "track": 2}), ("/Musique/DJ X/Mon Mix", "02 - Artiste - Titre"))
+        self.assertEqual(ma.library_plan("music", {"title": "Titre"}, None, {"artist": "DJ X", "album": "Mon Mix", "album_artist": "DJ X", "track": 2}), ("/Musique/DJ X/Mon Mix", "02 - Titre"))
+
+    def test_a_track_is_a_nip71_event_with_an_audio_imeta_and_its_cover(self):
+        fiche = {"type": "music", "title": "Titre", "music": {"artist": "Artiste", "album": "Mon Mix", "album_artist": "DJ X", "track": 2, "from_mix": {"title": "Mon Mix", "url": "https://www.youtube.com/watch?v=abcdefghijk", "start_s": 754}},
+                 "ids": {"youtube": "abcdefghijk"}, "source": {"kind": "web", "rights": "private_copy"},
+                 "technical": {"duration_s": 245.0, "size": 4_000_000, "mime": "audio/mpeg", "sha256": "b" * 64, "audio": []}}
+        valid({**fiche, "schema": "media/v1", "generated_at": 1, "file": "02 - Artiste - Titre.mp3", "sharing": {"level": "circle"}, "artwork": {"cover": "02 - Artiste - Titre.cover.jpg"}})
+        kind, tags = ma.music_event_tags(fiche, "bafkreison", "bafkreicover")
+        first = {t[0]: t[1:] for t in tags}
+        self.assertEqual((kind, first["title"], first["url"], first["m"]), (21, ["Artiste — Titre"], ["/ipfs/bafkreison"], ["audio/mpeg"]))
+        imeta = first["imeta"]
+        self.assertIn("m audio/mpeg", imeta)
+        self.assertIn("image /ipfs/bafkreicover", imeta)
+        self.assertNotIn("dim", " ".join(imeta), "aucune image vidéo fabriquée")
+        self.assertEqual((first["artist"], first["album_artist"], first["track_number"], first["image"]), (["Artiste"], ["DJ X"], ["2"], ["/ipfs/bafkreicover"]))
+        self.assertTrue(["-"] in tags and ["t", "music"] in tags and ["t", "private-copy"] in tags and ["i", "youtube:abcdefghijk"] in tags)
+        self.assertNotIn("image", {t[0] for t in ma.music_event_tags(fiche, "c")[1]}, "sans pochette, pas d'image")
+
+    def test_a_mix_playlist_is_a_nip51_curation_set_in_mix_order(self):
+        kind, tags = ma.playlist_event_tags({"title": "Mon Mix", "dj": "DJ X", "youtube": "abcdefghijk"}, ["e1", "e2"])
+        self.assertEqual(kind, 30005)
+        self.assertEqual([t for t in tags if t[0] == "e"], [["e", "e1"], ["e", "e2"]])
+        self.assertTrue(["d", "mix:abcdefghijk"] in tags and ["-"] in tags and ["title", "Mon Mix"] in tags)
+        self.assertEqual(ma.m3u8([{"file": "01 - A - B.mp3", "duration_s": 61.4, "label": "A - B"}]), "#EXTM3U\n#EXTINF:61,A - B\n01 - A - B.mp3\n")
+
+
+class DjMix(unittest.TestCase):
+    def test_chapters_come_first_and_keep_their_start(self):
+        chapters = [{"title": "01. Artiste A - Titre Un (Label Records)", "start_time": 0.0}, {"title": "Artiste B - Titre Deux @handle", "start_time": 312.5}, {"title": "ok", "start_time": 600}]
+        self.assertEqual(dj.extract_tracklist("00:00 autre chose - ignoré", chapters), [("Artiste A - Titre Un", 0), ("Artiste B - Titre Deux", 312)])
+
+    def test_description_timestamps_then_plain_lines(self):
+        desc = "Suivez-moi https://instagram.com/x 00:10\n00:00 Artiste A - Un\n[12:34] Artiste B - Deux\n1:02:58 artiste a - un\n"
+        self.assertEqual(dj.extract_tracklist(desc), [("Artiste A - Un", 0), ("Artiste B - Deux", 754)], "liens ignorés, doublons retirés")
+        self.assertEqual(dj.extract_tracklist("Intro\nArtiste C - Trois\n"), [("Artiste C - Trois", None)], "sans repère : début inconnu")
+        self.assertEqual(dj.extract_tracklist("Un mix sans liste"), [])
+
+    def test_the_best_candidate_is_the_one_sharing_most_words(self):
+        hits = [{"id": "a", "title": "Something else entirely"}, {"id": "b", "title": "Artiste A - Titre Un (Official Video)"}, {"title": "sans id"}]
+        self.assertEqual(dj.best_match("Artiste A - Titre Un", hits)[1], "b")
+        self.assertIsNone(dj.best_match("x", []))
+        self.assertEqual(dj.split_artist_title("A – B - C"), ("A", "B - C"))
+        self.assertEqual(dj.split_artist_title("Seul"), (None, "Seul"))
 
     def test_the_video_event_uses_the_station_cid_and_the_nip71_tags(self):
         fiche = {"type": "episode", "title": "Pilote", "year": 2019, "genres": ["Science-Fiction"], "ids": {"tmdb": 99}, "series": {"name": "Test", "season": 1, "episode": 2},
@@ -366,6 +455,7 @@ class Whole(unittest.TestCase):
 
     def setUp(self):
         FakeStation.files, FakeStation.dirs = {}, {""}
+        FakeStation.friends, FakeStation.asked, FakeStation.match_status = {}, [], 200
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), FakeStation)
         threading.Thread(target=self.http.serve_forever, daemon=True).start()
         self.dir = Path(tempfile.mkdtemp())
@@ -388,6 +478,12 @@ class Whole(unittest.TestCase):
                 if m[0] == "EVENT":
                     self.events.append(m[1])
                     send(["OK", m[1]["id"], nl.verify_event(m[1]), ""])
+                elif m[0] == "REQ":
+                    f = m[2]
+                    for ev in self.events:
+                        if ev["kind"] in f.get("kinds", [ev["kind"]]) and all(["x", x] in [t[:2] for t in ev["tags"]] for x in f.get("#x", [])[:1]):
+                            send(["EVENT", m[1], ev])
+                    send(["EOSE", m[1]])
 
         self.relay = ws_server(handler, ready)
         cfg = {"station_url": f"http://127.0.0.1:{self.http.server_address[1]}", "relay_url": f"ws://127.0.0.1:{ready[0]}/", "nostr_dir": str(self.nostr), "accounts": {"alice@example.org": "jeton"}}
@@ -454,9 +550,140 @@ class Whole(unittest.TestCase):
             ma.run = real
         self.assertFalse([c for c in calls if "ffmpeg" in str(c[0])], "pas de réencodage pour un doublon")
 
+    # ── Déduplication sociale : l'œuvre déjà chez un ami est demandée (même fichier), pas redéposée. ──
+    LEA = {"type": "film", "title": "Le Voyage de Chihiro (2001)", "author_label": "Léa", "event_id": "e" * 64, "sources": 2, "copied": None}
+
+    def catalogue(self):
+        return mock.patch.multiple(ma, tmdb_get=lambda key, p, q: Catalogue().get(p, q), download=mock.Mock(side_effect=OSError("hors ligne")))
+
+    def test_a_film_a_friend_already_has_is_asked_from_them_before_any_work(self):
+        FakeStation.friends[(("tmdb", "129"),)] = self.LEA
+        calls = []
+        with mock.patch.dict(os.environ, {"TMDB_API_KEY": "k"}), self.catalogue(), mock.patch.object(ma, "run", lambda cmd, t: calls.append(cmd) or b""):
+            self.assertEqual(ma.main([str(self.src), "--title", "Le Voyage de Chihiro", "--level", "circle"]), 0)
+        self.assertEqual(calls, [], "ni sondage ni réencodage")
+        self.assertEqual((FakeStation.files, self.events), ({}, []), "rien n'est déposé ni publié")
+        self.assertEqual(FakeStation.asked, [("match", (("tmdb", "129"),)), ("request", "e" * 64)])
+        journal = [json.loads(l) for l in ma.JOURNAL.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual((journal[-1]["from_friend"], journal[-1]["state"]), ("Léa", "asked"))
+
+    def test_own_copy_deposits_even_when_a_friend_has_the_film(self):
+        FakeStation.friends[(("tmdb", "129"),)] = self.LEA
+        with mock.patch.dict(os.environ, {"TMDB_API_KEY": "k"}), self.catalogue():
+            self.assertEqual(ma.main([str(self.src), "--title", "Le Voyage de Chihiro", "--level", "private", "--own-copy"]), 0)
+        self.assertEqual(FakeStation.asked, [], "la station n'est pas consultée")
+        self.assertIn("/Vidéos/Films/Le Voyage de Chihiro (2001).mp4", FakeStation.files)
+
+    def test_an_episode_is_recognised_by_its_series_and_a_silent_station_does_not_block(self):
+        args = [str(self.src), "--type", "episode", "--series", "Ma Série", "--season", "1", "--episode", "3", "--no-catalog", "--level", "private"]
+        q = (("episode", "3"), ("season", "1"), ("series", "Ma Série"))
+        FakeStation.friends[q] = {**self.LEA, "type": "episode", "copied": "/Vidéos/Séries/Ma Série/Saison 01/Ma Série S01E03.mp4"}
+        self.assertEqual(ma.main(args), 0)
+        self.assertEqual(FakeStation.asked, [("match", q)], "déjà copié chez le membre : rien n'est redemandé")
+        self.assertEqual(FakeStation.files, {})
+        FakeStation.match_status = 500
+        self.assertEqual(ma.main(args), 0)
+        self.assertIn("/Vidéos/Séries/Ma Série/Saison 01/Ma Série S01E03.mp4", FakeStation.files, "station en panne : dépôt ordinaire")
+
     def test_a_missing_file_or_a_missing_title_is_refused_without_a_traceback(self):
         self.assertEqual(ma.main([str(self.dir / "absent.mkv"), "--dry-run", str(self.dir / "o")]), 2)
         self.assertEqual(ma.main([str(self.src), "--type", "episode", "--dry-run", str(self.dir / "o")]), 2)
+
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg absent")
+class Mix(Whole):
+    """Un mix YouTube avec un yt-dlp simulé : métadonnées, recherche, téléchargement d'un vrai mp3 avec sa pochette."""
+
+    INFO = {"id": "mixmixmix01", "title": "Mon Mix", "uploader": "DJ Test", "webpage_url": "https://www.youtube.com/watch?v=mixmixmix01", "description": "",
+            "chapters": [{"title": "Artiste A - Titre Un", "start_time": 0}, {"title": "Artiste B - Titre Deux", "start_time": 200}, {"title": "Artiste C - Introuvable", "start_time": 400}]}
+    SEARCH = {"Artiste A - Titre Un": [{"id": "aaaaaaaaaaa", "title": "Artiste A - Titre Un (Official)"}],
+              "Artiste B - Titre Deux": [{"id": "bbbbbbbbbbb", "title": "Artiste B Titre Deux"}],
+              "Artiste C - Introuvable": [{"id": "ccccccccccc", "title": "Une tout autre chanson"}]}
+
+    def setUp(self):
+        super().setUp()
+        self.info, self.downloads = dict(self.INFO), []
+        self.real_run = ma.run
+        ma.run = self.fake_run
+
+    def tearDown(self):
+        ma.run = self.real_run
+        super().tearDown()
+
+    def fake_run(self, cmd, timeout):
+        if cmd[0] != "yt-dlp":
+            return self.real_run(cmd, timeout)
+        target = cmd[-1]
+        if "--dump-json" in cmd:
+            if target.startswith("ytsearch"):
+                query = target.split(":", 1)[1]
+                return "\n".join(json.dumps(h) for h in self.SEARCH.get(query, [])).encode()
+            return json.dumps(self.info).encode()
+        yid = target.rsplit("=", 1)[1]
+        self.downloads.append(yid)
+        work = Path(cmd[cmd.index("-o") + 1]).parent
+        self.real_run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency={200 + sum(map(ord, yid)) % 700}:duration=3", "-c:a", "libmp3lame", str(work / f"{yid}.mp3")], 60)
+        self.real_run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x64", "-frames:v", "1", str(work / f"{yid}.jpg")], 60)
+        (work / f"{yid}.info.json").write_text(json.dumps({"id": yid, "title": f"vidéo {yid}", "uploader": "chaîne"}))
+        return b""
+
+    def mix(self, *extra):
+        return ma.main(["https://www.youtube.com/watch?v=mixmixmix01", "--type", "mix", "--level", "circle", *extra])
+
+    def test_each_track_of_the_mix_is_deposited_with_its_event_and_the_mix_becomes_a_playlist(self):
+        self.assertEqual(self.mix(), 0)
+        folder = "/Musique/DJ Test/Mon Mix"
+        self.assertIn(f"{folder}/01 - Artiste A - Titre Un.mp3", FakeStation.files)
+        self.assertIn(f"{folder}/02 - Artiste B - Titre Deux.cover.jpg", FakeStation.files)
+        self.assertFalse([p for p in FakeStation.files if "Introuvable" in p], "un résultat sans rapport n'est pas téléchargé")
+        self.assertEqual(self.downloads, ["aaaaaaaaaaa", "bbbbbbbbbbb"])
+        fiche = json.loads(FakeStation.files[f"{folder}/02 - Artiste B - Titre Deux.media.json"])
+        valid(fiche)
+        self.assertEqual(fiche["music"]["from_mix"], {"title": "Mon Mix", "url": "https://www.youtube.com/watch?v=mixmixmix01", "start_s": 200})
+        self.assertEqual((fiche["music"]["album_artist"], fiche["artwork"]["cover"]), ("DJ Test", "02 - Artiste B - Titre Deux.cover.jpg"))
+        tracks = [e for e in self.events if e["kind"] in (21, 22)]
+        self.assertEqual(len(tracks), 2)
+        self.assertTrue(all(["t", "music"] in e["tags"] and nl.verify_event(e) for e in tracks))
+        playlist = [e for e in self.events if e["kind"] == 30005]
+        self.assertEqual(len(playlist), 1)
+        self.assertEqual([t[1] for t in playlist[0]["tags"] if t[0] == "e"], [e["id"] for e in tracks], "dans l'ordre du mix")
+        self.assertIn("01 - Artiste A - Titre Un.mp3", FakeStation.files[f"{folder}/Mon Mix.m3u8"].decode())
+
+        # Relancé (même lien depuis Open With) : rien n'est retéléchargé, la playlist garde ses deux morceaux.
+        self.downloads.clear()
+        self.assertEqual(self.mix(), 0)
+        self.assertEqual(self.downloads, [])
+        again = [e for e in self.events if e["kind"] == 30005][-1]
+        self.assertEqual([t[1] for t in again["tags"] if t[0] == "e"], [e["id"] for e in tracks])
+
+    def test_a_track_a_friend_already_has_is_not_downloaded(self):
+        FakeStation.friends[(("youtube", "bbbbbbbbbbb"),)] = {**Whole.LEA, "type": "music", "title": "Artiste B — Titre Deux"}
+        self.assertEqual(self.mix(), 0)
+        self.assertEqual(self.downloads, ["aaaaaaaaaaa"], "le morceau de l'ami n'est pas téléchargé")
+        self.assertIn(("request", "e" * 64), FakeStation.asked)
+        self.assertFalse([p for p in FakeStation.files if "Titre Deux" in p])
+
+    def test_a_mix_without_tracklist_is_kept_whole(self):
+        self.info = {**self.INFO, "chapters": [], "description": "Un mix sans liste"}
+        self.assertEqual(self.mix("--level", "private"), 0)
+        self.assertIn("/Musique/DJ Test/Mixes/Mon Mix.mp3", FakeStation.files)
+        self.assertEqual(self.downloads, ["mixmixmix01"])
+
+    def test_when_no_track_can_be_found_the_mix_is_kept_whole(self):
+        self.info = {**self.INFO, "chapters": [{"title": "Artiste C - Introuvable", "start_time": 0}]}
+        self.assertEqual(self.mix("--level", "private"), 0)
+        self.assertEqual(self.downloads, ["mixmixmix01"])
+        self.assertIn("/Musique/DJ Test/Mixes/Mon Mix.mp3", FakeStation.files)
+
+    def test_the_multipass_youtube_cookie_is_used_without_being_asked(self):
+        cookie = self.nostr / "alice@example.org" / ".youtube.com.cookie"
+        cookie.write_text("# Netscape HTTP Cookie File\n")
+        seen = []
+        fake = self.fake_run
+        ma.run = lambda cmd, t: seen.append(cmd) or fake(cmd, t)
+        self.assertEqual(self.mix("--level", "private", "--limit", "1"), 0)
+        self.assertTrue(all(["--cookies", str(cookie)] == c[c.index("--cookies"):c.index("--cookies") + 2] for c in seen if c[0] == "yt-dlp"))
 
 
 if __name__ == "__main__":
