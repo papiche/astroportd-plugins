@@ -75,9 +75,18 @@ install_powerjoular() {
       else die "gestionnaire de paquets non reconnu : installez gnat et gprbuild"; fi
     fi
     local src="$LIB/src/powerjoular"
-    if [ -d "$src/.git" ]; then git -C "$src" pull --ff-only; else mkdir -p "$LIB/src"; git clone --depth 1 https://github.com/papiche/powerjoular.git "$src"; fi
-    (cd "$src" && mkdir -p obj && gprbuild powerjoular.gpr) || die "compilation de PowerJoular impossible"
-    local bin="$src/obj/powerjoular"; [ -x "$bin" ] || bin="$src/powerjoular"
+    mkdir -p "$LIB/src"
+    # PowerJoular 2 importe joularcore.gpr et cpuload.gpr (bibliothèques Alire) : on les clone à côté, sans Alire.
+    local repo dir
+    for repo in papiche/powerjoular joular/joularcore joular/cpuload; do
+      dir="$LIB/src/${repo#*/}"
+      if [ -d "$dir/.git" ]; then git -C "$dir" pull --ff-only -q || die "mise à jour de $repo impossible"
+      else git clone -q --depth 1 "https://github.com/$repo.git" "$dir" || die "téléchargement de $repo impossible"; fi
+    done
+    (cd "$src" && mkdir -p obj && gprbuild -p -aP"$LIB/src/joularcore" -aP"$LIB/src/cpuload" powerjoular.gpr) \
+      || die "compilation de PowerJoular impossible"
+    local bin="$src/bin/powerjoular"   # PowerJoular 2 (Exec_Dir « bin ») ; les anciennes versions : obj/ ou la racine
+    [ -x "$bin" ] || bin="$src/obj/powerjoular"; [ -x "$bin" ] || bin="$src/powerjoular"
     [ -x "$bin" ] || die "binaire PowerJoular introuvable après compilation"
     run_root install -m 0755 "$bin" /usr/bin/powerjoular
     touch "$LIB/.installed-powerjoular"   # uninstall.sh ne retire que ce qu'il a posé

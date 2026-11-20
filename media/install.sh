@@ -17,7 +17,9 @@ if ((${#missing[@]})); then
   exit 1
 fi
 command -v yt-dlp >/dev/null 2>&1 || echo "Avertissement : yt-dlp absent, les adresses web ne seront pas acceptées (pipx install yt-dlp)." >&2
-ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264 || echo "Avertissement : ffmpeg sans libx264, le réencodage H.264 échouera (--no-transcode pour déposer tel quel)." >&2
+# Sortie lue en entier : avec pipefail, « | grep -q » coupe le tube et ffmpeg (SIGPIPE) ferait croire à l'absence.
+encoders="$(ffmpeg -hide_banner -encoders 2>/dev/null || true)"
+[[ "$encoders" == *libx264* ]] || echo "Avertissement : ffmpeg sans libx264, le réencodage H.264 échouera (--no-transcode pour déposer tel quel)." >&2
 
 mkdir -p "$DATA" "$BIN"
 chmod 700 "$DATA"
