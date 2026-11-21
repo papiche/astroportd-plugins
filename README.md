@@ -36,9 +36,13 @@ Le plus simple : le script présente les plugins, clone ce dépôt (`~/.zen/astr
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/papiche/astroportd-plugins/main/install-plugins.sh | bash
-./install-plugins.sh --list          # présente, n'installe rien
+./install-plugins.sh --list          # présente avec leur état (à jour, mise à jour, NOUVEAU), n'installe rien
 ./install-plugins.sh media energy    # sans question
+./install-plugins.sh --update        # met à jour ceux qui sont installés, propose les nouveaux (--yes : mises à jour seules)
+./install-plugins.sh --status        # nom|installée|disponible|état, une ligne par plugin
 ```
+
+La version installée de chaque plugin est notée dans `~/.zen/astroportd/plugins/.installed/<nom>` ; un plugin installé avant ce suivi est reconnu à son dossier de données et repassé en « mise à jour ». `install.sh` d'astroportd lance `--update` à chaque mise à jour de la station.
 
 Ou à la main :
 
