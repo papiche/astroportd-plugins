@@ -4,7 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/papiche/astroportd-plugins/main/install-plugins.sh | bash
 #   ./install-plugins.sh --list              # présente les plugins et leur état, n'installe rien
 #   ./install-plugins.sh media energy        # installe (ou réinstalle) ceux-là, sans question
-#   ./install-plugins.sh --all --yes         # tous, sans question
+#   ./install-plugins.sh --all --yes         # tous ceux d'usage courant, sans question (les facultatifs se demandent par leur nom)
+#   ./install-plugins.sh corpus              # facultatif : jeu d'essai pour vérifier la recherche
 #   ./install-plugins.sh --update            # met à jour les plugins installés, propose les nouveaux (--yes : mises à jour seules)
 #   ./install-plugins.sh --status            # une ligne « nom|installée|disponible|état » par plugin (lu par la station)
 #
@@ -26,7 +27,7 @@ say()  { [ "$STATUS" = 1 ] || printf '%s\n' "$*"; }
 warn() { printf '⚠  %s\n' "$*" >&2; }
 die()  { printf '✘ %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -73,18 +74,24 @@ installed_version() {
 }
 was_known() { [ -f "$KNOWN" ] && grep -qx "$1" "$KNOWN"; }
 
-NAMES=(); DESCS=(); ROOTS=(); VERS=(); HAVE=(); STATES=()
+# Un plugin facultatif (`optional = true`, ex. le jeu d'essai « corpus ») n'est jamais pris par --all ni proposé comme
+# nouveauté : on l'installe en le nommant.
+NAMES=(); DESCS=(); ROOTS=(); VERS=(); HAVE=(); STATES=(); OPTS=()
+MANIFESTS=(); LATER=()  # les facultatifs en fin de liste
 for manifest in "$DIR"/*/plugin.toml; do
   [ -f "$manifest" ] || continue
+  if [ "$(toml_bool optional "$manifest")" = true ]; then LATER+=("$manifest"); else MANIFESTS+=("$manifest"); fi
+done
+for manifest in ${MANIFESTS[@]+"${MANIFESTS[@]}"} ${LATER[@]+"${LATER[@]}"}; do
   d="$(dirname "$manifest")"
   [ -f "$d/install.sh" ] || continue
   n="$(basename "$d")"; v="$(toml_get version "$manifest")"; h="$(installed_version "$n" "$(toml_get data_dir "$manifest")")"
   if [ -n "$h" ] && [ "$h" = "$v" ]; then s=ajour
   elif [ -n "$h" ]; then s=maj
-  elif [ -f "$KNOWN" ] && ! was_known "$n"; then s=nouveau
+  elif [ -f "$KNOWN" ] && ! was_known "$n" && [ "$(toml_bool optional "$manifest")" != true ]; then s=nouveau
   else s=absent; fi
   NAMES+=("$n"); DESCS+=("$(toml_get description "$manifest")"); ROOTS+=("$(toml_bool needs_root "$manifest")")
-  VERS+=("$v"); HAVE+=("$h"); STATES+=("$s")
+  VERS+=("$v"); HAVE+=("$h"); STATES+=("$s"); OPTS+=("$(toml_bool optional "$manifest")")
 done
 [ "${#NAMES[@]}" -gt 0 ] || die "aucun plugin trouvé dans $DIR."
 
@@ -108,6 +115,7 @@ say ""
 say "Plugins (ils s'ajoutent à la station, qui ne les exécute jamais elle-même) :"
 for i in "${!NAMES[@]}"; do
   extra=""; [ "${ROOTS[$i]}" = true ] && extra="  [demande sudo une fois, à l'installation]"
+  [ "${OPTS[$i]}" = true ] && extra="$extra  [facultatif : installé seulement si vous le nommez]"
   say "$(printf '  %d) %-8s %s' "$((i + 1))" "${NAMES[$i]}" "$(state_words "$i")")"
   say "     ${DESCS[$i]}${extra}"
 done
@@ -150,15 +158,16 @@ if [ "$UPDATE" = 1 ]; then
     while IFS= read -r n; do [ -n "$n" ] && CHOSEN+=("$n"); done < <(pick "$a" "${FRESH[@]}")
   fi
 elif [ "$ALL" = 1 ]; then
-  CHOSEN=("${NAMES[@]}")
+  for i in "${!NAMES[@]}"; do [ "${OPTS[$i]}" = true ] || CHOSEN+=("${NAMES[$i]}"); done
 elif [ "${#WANTED[@]}" -gt 0 ]; then
   CHOSEN=("${WANTED[@]}")
 elif [ "$YES" = 1 ]; then
   say "Rien à installer : indiquez des noms, --all ou --update."
   exit 0
 elif [ -r /dev/tty ]; then
-  a="$(ask 'Lesquels installer ou mettre à jour ? (numéros ou noms séparés par des espaces, « tous », entrée = aucun) : ')"
-  while IFS= read -r n; do [ -n "$n" ] && CHOSEN+=("$n"); done < <(pick "$a" "${NAMES[@]}")
+  a="$(ask 'Lesquels installer ou mettre à jour ? (numéros ou noms séparés par des espaces, « tous » = sauf les facultatifs, entrée = aucun) : ')"
+  COMMON=(); for i in "${!NAMES[@]}"; do [ "${OPTS[$i]}" = true ] || COMMON+=("${NAMES[$i]}"); done
+  while IFS= read -r n; do [ -n "$n" ] && CHOSEN+=("$n"); done < <(pick "$a" ${COMMON[@]+"${COMMON[@]}"})
 else
   say "Pas de terminal interactif. Relancez : $0 <plugin>… (ou --all, --update)."
   exit 0

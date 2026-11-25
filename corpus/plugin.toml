@@ -1,0 +1,17 @@
+# Manifeste d'un plugin système d'astroportd (lu par la station : écran « Plugins »).
+name = "corpus"
+version = "0.1.0"
+description = "Jeu d'essai pour vérifier la recherche : photos libres (Wikimedia Commons), visages, panneau et ticket à lire, PDF, vidéos, dates et lieux fictifs, à déposer dans votre uCloud"
+# Facultatif : jamais installé par « --all » ni proposé comme nouveauté ; on le demande par son nom (install-plugins.sh corpus).
+optional = true
+# Aucun contrat de données : ce plugin ne produit rien que la station lise. Il fabrique des fichiers ordinaires et peut les
+# déposer par WebDAV dans l'uCloud du Capitaine, avec son jeton (jamais gardé).
+produces = ""
+data_dir = "plugins/corpus"
+# Journal des envois (adresse, compte, dossier, nombre de fichiers ; jamais le jeton) : indicatif.
+data_file = "journal.jsonl"
+refresh_secs = 0
+stale_after_secs = 0
+needs_root = false
+platforms = ["linux-x86_64", "linux-aarch64", "linux-armv7"]
+# Origine : astroportd tests/corpus/fabriquer_corpus.py (désormais ici ; astroportd garde un renvoi).

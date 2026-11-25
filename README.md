@@ -10,6 +10,7 @@ qu'elle n'a pas (root, Bluetooth, matériel) ou des outils lourds, et **prépare
 | [`energy`](energy/) | Consommation électrique (PowerJoular) et production solaire (Victron) de la station : balise publique, cockpit, PAF | `energy/v1` |
 | [`dnslink`](dnslink/) | Publication DNSLink OVH (sites IPFS, stations, membres) avec les paramètres d'API inscrits dans NOSTR par **chaque coopérative** de la station : un seul script de référence pour tous les projets | `dnslink/v1` |
 | [`media`](media/) | Acquisition et préparation des films, séries, vidéos, musiques et mix de DJ (ffprobe, ffmpeg, yt-dlp, TMDB), déposés dans l'uCloud du membre avec leur fiche | `media/v1` |
+| [`corpus`](corpus/) *(facultatif)* | Jeu d'essai pour vérifier la recherche : photos libres, visages, textes à lire, PDF, vidéos, dates et lieux fictifs, déposés dans l'uCloud du Capitaine | aucun |
 
 ## Le principe : un contrat de fichier, jamais d'exécution
 
@@ -39,6 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/papiche/astroportd-plugins/main/ins
 ./install-plugins.sh --list          # présente avec leur état (à jour, mise à jour, NOUVEAU), n'installe rien
 ./install-plugins.sh media energy    # sans question
 ./install-plugins.sh --update        # met à jour ceux qui sont installés, propose les nouveaux (--yes : mises à jour seules)
+./install-plugins.sh corpus          # un plugin facultatif s'installe seulement en le nommant (ni --all, ni « nouveau »)
 ./install-plugins.sh --status        # nom|installée|disponible|état, une ligne par plugin
 ```
 
@@ -59,6 +61,7 @@ Station installée ailleurs que dans `~/.zen/astroportd` : `ASTROPORTD_HOME=/che
 ```text
 <nom>/
   plugin.toml     name, version, description, produces, data_dir, data_file, refresh_secs, stale_after_secs, needs_root
+                  (optional = true : jamais pris par --all ni proposé comme nouveauté ; produces = "" : aucun contrat)
   install.sh      installe et démarre (idempotent : relancé, il met à jour)
   setup.sh        réglages après installation
   uninstall.sh    retire ce qu'il a posé ; les données restent sauf avec --purge
